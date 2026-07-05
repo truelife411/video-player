@@ -171,6 +171,13 @@ export function useMpv() {
     invoke<string>("register_video", { path })
       .then(async (h) => {
         videoHash.value = h;
+        // 自动识别文件名开头的★数并标注星级
+        const starMatch = (path.split(/[\\/]/).pop() || "").match(/^★+/);
+        if (starMatch) {
+          const stars = Math.min(7, Math.max(1, starMatch[0].length));
+          invoke("set_video_tag", { videoHash: h, typeId: 1, value: String(stars) })
+            .catch(() => {});
+        }
         try {
           const info = await invoke<{ play_position: number; duration: number } | null>(
             "get_video",

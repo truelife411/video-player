@@ -80,7 +80,7 @@ pub fn init(app: &AppHandle) -> rusqlite::Result<()> {
         [],
         |r| r.get(0),
     )?;
-    for (i, v) in ["1", "2", "3", "4", "5"].iter().enumerate() {
+    for (i, v) in ["1", "2", "3", "4", "5", "6", "7"].iter().enumerate() {
         conn.execute(
             "INSERT OR IGNORE INTO tag_options (type_id, value, sort_order) VALUES (?1,?2,?3)",
             rusqlite::params![star_id, v, i as i64],

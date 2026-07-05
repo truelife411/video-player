@@ -83,9 +83,8 @@ const volumeIcon = computed(() => {
           @click="emit('togglePlay')"
         >
           <Transition name="icon-pop" mode="out-in">
-            <span :key="isPlaying ? 'pause' : 'play'" class="play-icon">
-              {{ isPlaying ? "⏸" : "▶" }}
-            </span>
+            <span v-if="isPlaying" key="pause" class="play-icon icon-pause"></span>
+            <span v-else key="play" class="play-icon icon-play"></span>
           </Transition>
         </button>
         <button
@@ -221,6 +220,37 @@ const volumeIcon = computed(() => {
 
 .play-icon {
   display: inline-block;
+  position: relative;
+  width: 16px;
+  height: 16px;
+}
+
+/* 播放：CSS 三角形（向右） */
+.icon-play {
+  width: 0;
+  height: 0;
+  border-left: 13px solid #fff;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  margin-left: 3px;
+}
+
+/* 暂停：两根竖条 */
+.icon-pause::before,
+.icon-pause::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  width: 4px;
+  height: 14px;
+  background: #fff;
+  border-radius: 1px;
+}
+.icon-pause::before {
+  left: 3px;
+}
+.icon-pause::after {
+  right: 3px;
 }
 
 /* 播放/暂停图标切换动画 */

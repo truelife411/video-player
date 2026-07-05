@@ -16,15 +16,21 @@ const mpv = useMpv();
 const tags = useTags();
 const search = useSearch();
 
-// —— 设置面板 ——
+// —— 浮层状态 ——
 const showSettings = ref(false);
+const showTagCard = ref(false);
+const showSearch = ref(false);
+
+// 任何浮层打开时，禁用 surface 的点击（防止穿透到视频）
+const anyOverlayOpen = computed(
+  () => showSettings.value || showTagCard.value || showSearch.value
+);
 function toggleSettings() {
   if (!mpv.currentFile.value) return;
   showSettings.value = !showSettings.value;
 }
 
 // —— 标签卡片（T 键或右键唤出）——
-const showTagCard = ref(false);
 const videoHash = ref<string>("");
 const tagCardLoading = ref(false);
 async function toggleTagCard() {
@@ -39,9 +45,16 @@ async function toggleTagCard() {
   }
   tagCardLoading.value = true;
   try {
-    const h = await invoke<string>("register_video", { path: mpv.currentFile.value });
+    // 复用 openFile 时已算的 hash，避免重复计算（大文件 hash 是主要耗时）
+    let h = mpv.videoHash.value;
+    if (!h) {
+      h = await invoke<string>("register_video", { path: mpv.currentFile.value });
+    }
     videoHash.value = h;
-    await tags.loadTagTypes();
+    // 标签类型只在首次或为空时加载（缓存，避免每次 T 键都查库）
+    if (tags.tagTypes.value.length === 0) {
+      await tags.loadTagTypes();
+    }
     await tags.loadVideoTags(h);
     showTagCard.value = true;
   } catch (e) {
@@ -62,7 +75,6 @@ function showToast(msg: string) {
 }
 
 // —— 搜索浮层（Ctrl+F）——
-const showSearch = ref(false);
 function toggleSearch() {
   showSearch.value = !showSearch.value;
   if (!showSearch.value) search.clear();
@@ -267,7 +279,10 @@ onUnmounted(() => {
   <!-- 视频表面：透明，单击=播放/暂停，双击=全屏，右键=标签卡片 -->
   <div
     class="surface"
-    :class="{ 'cursor-hidden': !controlsVisible && mpv.isPlaying.value }"
+    :class="{
+      'cursor-hidden': !controlsVisible && mpv.isPlaying.value,
+      'overlay-open': anyOverlayOpen,
+    }"
     @click="onSurfaceClick"
     @dblclick="onSurfaceDblClick"
     @contextmenu.prevent="toggleTagCard"
@@ -383,6 +398,15 @@ onUnmounted(() => {
   justify-content: space-between;
   cursor: default;
   user-select: none;
+}
+
+/* 浮层打开时：禁用 surface 点击，防止穿透到视频；
+   浮层和控制栏自身重新启用 pointer-events */
+.surface.overlay-open {
+  pointer-events: none;
+}
+.surface.overlay-open :where(.tagcard-pos, .bottom-wrap, .overlay-top) {
+  pointer-events: auto;
 }
 
 /* 底部容器：控制栏 + 浮在上方的设置面板 */

@@ -100,7 +100,7 @@ const title = computed(() => (props.hash ? "视频标签" : "无视频"));
         <!-- 星级（专用 5 颗星） -->
         <div v-if="isStar(t)" class="stars">
           <button
-            v-for="n in 5"
+            v-for="n in 7"
             :key="n"
             class="star"
             :class="{ on: n <= starCount(t) }"
