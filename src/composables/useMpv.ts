@@ -3,7 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { pictureDir, join } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, PhysicalSize, currentMonitor } from "@tauri-apps/api/window";
 import {
   init,
   command,
@@ -58,9 +58,102 @@ export function useMpv() {
   const aspectRatio = ref<string>("Default"); // Default / 16:9 / 4:3 / ...
   const videoWidth = ref(0);
   const videoHeight = ref(0);
+  // 画面变换：旋转角度（0/90/180/270）、水平/垂直翻转
+  const videoRotate = ref(0);
+  const hFlipped = ref(false);
+  const vFlipped = ref(false);
   // AB 循环
   const abLoopA = ref<number | null>(null);
   const abLoopB = ref<number | null>(null);
+
+  // 根据视频分辨率自动调整窗口大小。
+  // 核心原则：视频像素 ↔ 屏幕物理像素 1:1（"原寸"= 一个视频像素对应一个屏幕像素）。
+  // 所以全程用【物理像素】比较和设置，绕开 DPI 缩放造成的逻辑/物理像素换算误差。
+  //
+  // 策略：
+  //   1) 原寸优先——480p 就占屏 1/4、1080p 就占屏一半多，居中显示；
+  //   2) 一旦视频原寸（宽或高，含 UI 物理高度补偿）超过屏幕物理分辨率（如 4K），
+  //      直接 maximize()——保证画面绝不超出屏幕。
+  async function resizeWindowForVideo(w: number, h: number) {
+    if (w <= 0 || h <= 0) return;
+    try {
+      const appWindow = getCurrentWindow();
+      // 取屏幕物理像素
+      let physScreenW: number;
+      let physScreenH: number;
+      let scaleFactor = 1;
+      const monitor = await currentMonitor().catch(() => null);
+      if (monitor && monitor.size && monitor.scaleFactor > 0) {
+        physScreenW = monitor.size.width;
+        physScreenH = monitor.size.height;
+        scaleFactor = monitor.scaleFactor;
+      } else {
+        // 兜底：window.screen 是逻辑像素，反推物理像素
+        scaleFactor = window.devicePixelRatio || 1;
+        physScreenW = Math.round(window.screen.width * scaleFactor);
+        physScreenH = Math.round(window.screen.height * scaleFactor);
+      }
+      // UI 高度补偿（逻辑像素）：控制栏~90 + 顶部文件名条~50 + 标题栏~32 = 172
+      const UI_EXTRA_H_LOGICAL = 172;
+      const uiExtraHPhys = Math.round(UI_EXTRA_H_LOGICAL * scaleFactor);
+      // 用户缩放系数：在原寸基础上整体放大/缩小
+      const scale = windowScale.value > 0 ? windowScale.value : 1;
+      const needW = Math.round(w * scale);
+      const needH = Math.round((h + uiExtraHPhys) * scale);
+
+      if (needW > physScreenW || needH > physScreenH) {
+        // 超屏：直接最大化，绝不出现画面在屏幕外
+        await appWindow.maximize();
+      } else {
+        // 原寸：先解除可能的最大化态，再用物理像素设原寸并居中
+        try {
+          const isMax = await appWindow.isMaximized();
+          if (isMax) await appWindow.unmaximize();
+        } catch {
+          /* 忽略 */
+        }
+        await appWindow.setSize(new PhysicalSize(needW, needH));
+        await appWindow.center();
+      }
+    } catch (e) {
+      console.warn("[自动调整窗口] 失败:", e);
+    }
+  }
+
+  // 轮询读取视频分辨率并调整窗口（轮询比 watch 更可靠：不受 hash 计算与
+  // observer 推送时序的竞态影响）。返回 Promise，在拿到分辨率并调整完窗口后 resolve。
+  let resizePollTimer: ReturnType<typeof setInterval> | null = null;
+  function stopResizePoll() {
+    if (resizePollTimer) {
+      clearInterval(resizePollTimer);
+      resizePollTimer = null;
+    }
+  }
+  // 等待 mpv 解析出真实分辨率（width/height），最多重试 40 次 * 250ms = 10 秒
+  function waitForVideoResolution(): Promise<{ w: number; h: number } | null> {
+    return new Promise((resolve) => {
+      let attempts = 0;
+      stopResizePoll();
+      resizePollTimer = setInterval(async () => {
+        attempts++;
+        try {
+          const w = await getProperty<number>("width", "int64").catch(() => 0);
+          const h = await getProperty<number>("height", "int64").catch(() => 0);
+          if (w > 0 && h > 0) {
+            stopResizePoll();
+            resolve({ w, h });
+            return;
+          }
+        } catch {
+          /* 忽略，继续重试 */
+        }
+        if (attempts > 40) {
+          stopResizePoll();
+          resolve(null);
+        }
+      }, 250);
+    });
+  }
 
   let unlisten: UnlistenFn | null = null;
 
@@ -175,13 +268,40 @@ export function useMpv() {
   const videoHash = ref<string>("");
 
   async function openFile(path: string) {
-    await command("loadfile", [path]);
-    currentFile.value = path;
-    // mpv 默认加载后自动播放，主动同步状态
-    isPlaying.value = true;
-    // 重置 AB 循环
+    // 先重置上一个视频残留的状态，避免新视频短暂显示旧的进度/轨道/分辨率
+    currentTime.value = 0;
+    duration.value = 0;
+    audioTracks.value = [];
+    subTracks.value = [];
+    currentAudioId.value = 1;
+    currentSubId.value = 0;
+    videoWidth.value = 0;
+    videoHeight.value = 0;
     abLoopA.value = null;
     abLoopB.value = null;
+    // 重置画面变换（仅同步前端状态，mpv 侧由 loadfile 自动重置）
+    videoRotate.value = 0;
+    hFlipped.value = false;
+    vFlipped.value = false;
+
+    // 关键：以暂停态加载新视频，避免先以"原尺寸/上一视频尺寸"播放一小会。
+    // 流程：loadfile(暂停) → 等待分辨率 → 调整窗口 → 取消暂停开始播放。
+    await setProperty("pause", true);
+    await command("loadfile", [path]);
+    currentFile.value = path;
+
+    // 等待 mpv 解析出真实分辨率，并据此调整窗口大小（这一步完成前视频保持暂停）
+    const dim = await waitForVideoResolution();
+    if (dim) {
+      videoWidth.value = dim.w;
+      videoHeight.value = dim.h;
+      await resizeWindowForVideo(dim.w, dim.h);
+    }
+
+    // 窗口已就位，开始播放
+    await setProperty("pause", false);
+    isPlaying.value = true;
+
     // 后台注册视频（算 hash + 写元信息），并恢复上次播放进度
     invoke<string>("register_video", { path })
       .then(async (h) => {
@@ -217,7 +337,7 @@ export function useMpv() {
             else if (vh >= 1080) quality = "1080p";
             else if (vh >= 720) quality = "720p";
             await invoke("set_video_tag", {
-              videoHash: h, // 注意这里 h 是 hash 变量
+              videoHash: h,
               typeId: qualityType.id,
               value: quality,
             });
@@ -225,35 +345,17 @@ export function useMpv() {
             console.warn("[自动标注画质] 失败:", e);
           }
         }, 1200);
-        // 根据视频分辨率自动调整窗口大小
-        setTimeout(async () => {
-          try {
-            const w = videoWidth.value;
-            const vh2 = videoHeight.value;
-            if (w <= 0 || vh2 <= 0) return;
-            const screenW = window.screen.availWidth;
-            const screenH = window.screen.availHeight;
-            const maxW = Math.round(screenW * 0.9);
-            const maxH = Math.round(screenH * 0.85);
-            let targetW = w;
-            let targetH = vh2;
-            if (targetW > maxW || targetH > maxH) {
-              const scale = Math.min(maxW / targetW, maxH / targetH);
-              targetW = Math.round(targetW * scale);
-              targetH = Math.round(targetH * scale);
-            }
-            const appWindow = getCurrentWindow();
-            await appWindow.setSize(new LogicalSize(targetW, targetH));
-          } catch (e) {
-            console.warn("[自动调整窗口] 失败:", e);
-          }
-        }, 1500);
         try {
           const info = await invoke<{ play_position: number; duration: number } | null>(
             "get_video",
             { hash: h }
           );
-          if (info && info.play_position > 5) {
+          // 仅在"从上次位置"模式下恢复进度；"从头开始"模式跳过
+          if (
+            resumeMode.value === "resume" &&
+            info &&
+            info.play_position > 5
+          ) {
             // 恢复到上次进度（跳过开头 5 秒以内的）
             await command("seek", [info.play_position, "absolute"]);
           }
@@ -434,14 +536,55 @@ export function useMpv() {
     aspectRatio.value = r;
   }
 
-  // 翻转/旋转
+  // 翻转/旋转。video-rotate 是 mpv 的可写属性，但部分封装对其用 setProperty 不生效，
+  // 改用 command("set", [...]) 更可靠。
   async function toggleHFlip() {
-    const cur = await getProperty<boolean>("vf", "flag").catch(() => false);
     await command("vf", ["toggle", "hflip"]);
-    void cur;
+    hFlipped.value = !hFlipped.value;
   }
   async function toggleVFlip() {
     await command("vf", ["toggle", "vflip"]);
+    vFlipped.value = !vFlipped.value;
+  }
+  // 顺时针旋转 90°（0→90→180→270→0 循环）
+  async function rotate90() {
+    videoRotate.value = (videoRotate.value + 90) % 360;
+    try {
+      await command("set", ["video-rotate", String(videoRotate.value)]);
+    } catch (e) {
+      console.error("[rotate90] 失败:", e);
+      // 回退到 setProperty
+      await setProperty("video-rotate", videoRotate.value);
+    }
+  }
+  // 逆时针旋转 90°
+  async function rotateMinus90() {
+    videoRotate.value = (videoRotate.value + 270) % 360;
+    try {
+      await command("set", ["video-rotate", String(videoRotate.value)]);
+    } catch (e) {
+      console.error("[rotateMinus90] 失败:", e);
+      await setProperty("video-rotate", videoRotate.value);
+    }
+  }
+  // 还原画面变换（旋转/翻转全部复位）
+  async function resetTransform() {
+    if (videoRotate.value !== 0) {
+      try {
+        await command("set", ["video-rotate", "0"]);
+      } catch {
+        await setProperty("video-rotate", 0);
+      }
+      videoRotate.value = 0;
+    }
+    if (hFlipped.value) {
+      await command("vf", ["toggle", "hflip"]);
+      hFlipped.value = false;
+    }
+    if (vFlipped.value) {
+      await command("vf", ["toggle", "vflip"]);
+      vFlipped.value = false;
+    }
   }
 
   // 色彩：brightness -100~100, contrast 0~100(scaled), saturation 0~100(scaled)
@@ -466,6 +609,7 @@ export function useMpv() {
   onUnmounted(() => {
     unlisten?.();
     if (progressTimer) clearInterval(progressTimer);
+    stopResizePoll();
     // 退出时最后保存一次（不等待，best-effort）
     saveProgress();
   });
@@ -473,15 +617,26 @@ export function useMpv() {
   // 快进/快退时间（秒），可通过设置面板修改
   const skipSeconds = ref(10);
 
+  // 窗口缩放系数：用户可调，打开视频时窗口在原寸基础上乘以此系数；超出屏幕仍自动最大化
+  const windowScale = ref(1);
+
+  // 新视频播放起点："start"=从头、"resume"=从上次位置
+  const resumeMode = ref<"start" | "resume">("resume");
+
   // 关闭当前文件
   async function closeFile() {
     await command("stop");
+    stopResizePoll();
     currentFile.value = "";
     currentFileName.value = "";
     videoHash.value = "";
     isPlaying.value = false;
     currentTime.value = 0;
     duration.value = 0;
+    audioTracks.value = [];
+    subTracks.value = [];
+    videoWidth.value = 0;
+    videoHeight.value = 0;
     abLoopA.value = null;
     abLoopB.value = null;
   }
@@ -491,8 +646,8 @@ export function useMpv() {
     isReady, isPlaying, currentTime, duration, volume, isMuted,
     currentFile, currentFileName, speed, videoHash,
     audioTracks, subTracks, currentAudioId, currentSubId,
-    aspectRatio, abLoopA, abLoopB, skipSeconds,
-    videoWidth, videoHeight,
+    aspectRatio, abLoopA, abLoopB, skipSeconds, windowScale, resumeMode,
+    videoWidth, videoHeight, videoRotate, hFlipped, vFlipped,
     // 文件
     openFileDialog, openFile, closeFile, loadSubtitle, loadSubtitleDialog, openDroppedFile,
     // 播放
@@ -504,7 +659,7 @@ export function useMpv() {
     // AB循环/逐帧
     setAbLoopA, setAbLoopB, clearAbLoop, frameBackStep, frameStep,
     // 画面
-    setAspectRatio, toggleHFlip, toggleVFlip,
+    setAspectRatio, toggleHFlip, toggleVFlip, rotate90, rotateMinus90, resetTransform,
     setBrightness, setContrast, setSaturation,
   };
 }

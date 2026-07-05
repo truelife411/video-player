@@ -9,6 +9,7 @@ import { useTags } from "./composables/useTags";
 import { useSearch } from "./composables/useSearch";
 import ControlBar from "./components/ControlBar.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
+import PlaybackPanel from "./components/PlaybackPanel.vue";
 import TagCard from "./components/TagCard.vue";
 import SearchOverlay from "./components/SearchOverlay.vue";
 
@@ -18,25 +19,39 @@ const search = useSearch();
 
 // —— 浮层状态 ——
 const showSettings = ref(false);
+const showPlayback = ref(false);
 const showTagCard = ref(false);
 const showSearch = ref(false);
 
 // 任何浮层打开时，禁用 surface 的点击（防止穿透到视频）
 const anyOverlayOpen = computed(
-  () => showSettings.value || showTagCard.value || showSearch.value
+  () => showSettings.value || showPlayback.value || showTagCard.value || showSearch.value
 );
+// 互斥：打开一个底部浮层时关闭另一个，避免重叠
+function closeBottomPanels() {
+  showSettings.value = false;
+  showPlayback.value = false;
+}
+
 function toggleSettings() {
-  if (!mpv.currentFile.value) return;
-  // 首次打开设置时加载标签类型，并确保预设标签存在（修复误删）
-  if (!showSettings.value) {
-    if (tags.tagTypes.value.length === 0) {
-      tags.loadTagTypes();
-    }
+  const willOpen = !showSettings.value;
+  closeBottomPanels();
+  if (willOpen) {
+    // 首次打开设置时加载标签类型，并确保预设标签存在（修复误删）
+    if (tags.tagTypes.value.length === 0) tags.loadTagTypes();
     tags.ensurePresets().then(() => {
       if (tags.tagTypes.value.length === 0) tags.loadTagTypes();
     });
+    showSettings.value = true;
   }
-  showSettings.value = !showSettings.value;
+}
+
+// 播放操作浮层（无视频时按钮已禁用，这里再保险一次）
+function togglePlayback() {
+  if (!mpv.currentFile.value) return;
+  const willOpen = !showPlayback.value;
+  closeBottomPanels();
+  showPlayback.value = willOpen;
 }
 
 // —— 标签卡片（T 键或右键唤出）——
@@ -243,6 +258,28 @@ function onKeyDown(e: KeyboardEvent) {
       // 逐帧前进
       if (mpv.currentFile.value) mpv.frameStep();
       break;
+    case "KeyR":
+      // 画面旋转：R 顺时针 90°，Shift+R 逆时针 90°
+      if (mpv.currentFile.value) {
+        if (e.shiftKey) mpv.rotateMinus90();
+        else mpv.rotate90();
+        showControls();
+      }
+      break;
+    case "KeyH":
+      // 水平翻转
+      if (mpv.currentFile.value) {
+        mpv.toggleHFlip();
+        showControls();
+      }
+      break;
+    case "KeyV":
+      // 垂直翻转（注意：避开与全屏 F 的混淆，V 专用于垂直翻转）
+      if (mpv.currentFile.value) {
+        mpv.toggleVFlip();
+        showControls();
+      }
+      break;
   }
 }
 
@@ -337,6 +374,24 @@ onUnmounted(() => {
           <SettingsPanel
             v-if="showSettings"
             class="settings-pos"
+            :skip-seconds="mpv.skipSeconds.value"
+            :tag-types="tags.tagTypes.value"
+            :window-scale="mpv.windowScale.value"
+            :resume-mode="mpv.resumeMode.value"
+            @close="showSettings = false"
+            @set-skip-seconds="(s) => (mpv.skipSeconds.value = s)"
+            @set-window-scale="(s) => (mpv.windowScale.value = s)"
+            @set-resume-mode="(m) => (mpv.resumeMode.value = m)"
+            @create-tag-type="(name, vt, opts) => tags.createTagType(name, vt, opts)"
+            @delete-tag-type="(id) => tags.deleteTagType(id)"
+          />
+        </Transition>
+
+        <!-- 播放操作面板（浮在控制栏右上） -->
+        <Transition name="pop">
+          <PlaybackPanel
+            v-if="showPlayback"
+            class="settings-pos"
             :speed="mpv.speed.value"
             :audio-tracks="mpv.audioTracks.value"
             :sub-tracks="mpv.subTracks.value"
@@ -344,9 +399,10 @@ onUnmounted(() => {
             :current-sub-id="mpv.currentSubId.value"
             :ab-loop-a="mpv.abLoopA.value"
             :ab-loop-b="mpv.abLoopB.value"
-            :skip-seconds="mpv.skipSeconds.value"
-            :tag-types="tags.tagTypes.value"
-            @close="showSettings = false"
+            :video-rotate="mpv.videoRotate.value"
+            :h-flipped="mpv.hFlipped.value"
+            :v-flipped="mpv.vFlipped.value"
+            @close="showPlayback = false"
             @set-speed="(s) => mpv.setSpeed(s)"
             @set-audio="(id) => mpv.setAudioTrack(id)"
             @set-sub="(id) => mpv.setSubTrack(id)"
@@ -357,9 +413,11 @@ onUnmounted(() => {
             @clear-ab="mpv.clearAbLoop()"
             @frame-back="mpv.frameBackStep()"
             @frame-forward="mpv.frameStep()"
-            @set-skip-seconds="(s) => mpv.skipSeconds.value = s"
-            @create-tag-type="(name, vt, opts) => tags.createTagType(name, vt, opts)"
-            @delete-tag-type="(id) => tags.deleteTagType(id)"
+            @rotate-cw="mpv.rotate90()"
+            @rotate-ccw="mpv.rotateMinus90()"
+            @toggle-h-flip="mpv.toggleHFlip()"
+            @toggle-v-flip="mpv.toggleVFlip()"
+            @reset-transform="mpv.resetTransform()"
           />
         </Transition>
 
@@ -381,7 +439,10 @@ onUnmounted(() => {
           @open-file="mpv.openFileDialog()"
           @close-file="mpv.closeFile()"
           @toggle-settings="toggleSettings"
+          @toggle-playback="togglePlayback"
           @toggle-tag-card="toggleTagCard"
+          @rotate-cw="mpv.rotate90()"
+          @rotate-ccw="mpv.rotateMinus90()"
         />
       </div>
     </Transition>

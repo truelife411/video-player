@@ -1,45 +1,22 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { SPEED_PRESETS, type Track } from "../composables/useMpv";
 import type { TagType } from "../composables/useTags";
 
 defineProps<{
-  speed: number;
-  audioTracks: Track[];
-  subTracks: Track[];
-  currentAudioId: number;
-  currentSubId: number;
-  abLoopA: number | null;
-  abLoopB: number | null;
   skipSeconds: number;
+  windowScale: number;
+  resumeMode: "start" | "resume";
   tagTypes: TagType[];
 }>();
 
 const emit = defineEmits<{
   close: [];
-  setSpeed: [s: number];
-  setAudio: [id: number];
-  setSub: [id: number];
-  loadSubtitle: [];
-  screenshot: [withSubs: boolean];
-  setAbA: [];
-  setAbB: [];
-  clearAb: [];
-  frameBack: [];
-  frameForward: [];
   setSkipSeconds: [s: number];
+  setWindowScale: [s: number];
+  setResumeMode: [m: "start" | "resume"];
   createTagType: [name: string, valueType: "enum" | "free", options: string[]];
   deleteTagType: [typeId: number];
 }>();
-
-function trackLabel(t: Track, idx: number): string {
-  const parts = [`#${t.id}`];
-  if (t.lang) parts.push(t.lang);
-  if (t.title) parts.push(t.title);
-  if (t.external) parts.push("(外挂)");
-  if (parts.length === 1) parts.push(`轨道 ${idx + 1}`);
-  return parts.join(" · ");
-}
 
 // 标签管理：新建表单
 const showCreateTag = ref(false);
@@ -63,11 +40,23 @@ function submitCreateTag() {
   newTagOptions.value = "";
 }
 
+// 删除确认：用自定义模态替代 window.confirm（Tauri WebView2 不支持原生 dialog）
+const pendingDelete = ref<TagType | null>(null);
+
 function confirmDeleteTag(t: TagType) {
   if (t.is_preset) return;
-  if (window.confirm(`确定要删除标签类型"${t.name}"吗？\n删除后所有视频中该标签的值也会被清除。`)) {
-    emit("deleteTagType", t.id);
+  pendingDelete.value = t;
+}
+
+function doDeleteTag() {
+  if (pendingDelete.value) {
+    emit("deleteTagType", pendingDelete.value.id);
+    pendingDelete.value = null;
   }
+}
+
+function cancelDeleteTag() {
+  pendingDelete.value = null;
 }
 </script>
 
@@ -80,88 +69,6 @@ function confirmDeleteTag(t: TagType) {
     </div>
 
     <div class="panel-body">
-      <!-- 倍速 -->
-      <section class="sec">
-        <div class="sec-title">播放速度</div>
-        <div class="speed-row">
-          <button
-            v-for="s in SPEED_PRESETS"
-            :key="s"
-            class="chip"
-            :class="{ active: Math.abs(speed - s) < 0.01 }"
-            @click="emit('setSpeed', s)"
-          >
-            {{ s }}x
-          </button>
-        </div>
-      </section>
-
-      <!-- 音轨 -->
-      <section class="sec">
-        <div class="sec-title">音轨</div>
-        <div class="track-list">
-          <button
-            v-for="(t, i) in audioTracks"
-            :key="'a' + t.id"
-            class="track-item"
-            :class="{ active: t.id === currentAudioId }"
-            @click="emit('setAudio', t.id)"
-          >
-            {{ trackLabel(t, i) }}
-          </button>
-          <p v-if="audioTracks.length === 0" class="empty">仅一个音轨</p>
-        </div>
-      </section>
-
-      <!-- 字幕 -->
-      <section class="sec">
-        <div class="sec-title-row">
-          <span class="sec-title">字幕</span>
-          <button class="link-btn" @click="emit('loadSubtitle')">+ 外挂字幕</button>
-        </div>
-        <div class="track-list">
-          <button
-            class="track-item"
-            :class="{ active: currentSubId === 0 }"
-            @click="emit('setSub', 0)"
-          >
-            禁用
-          </button>
-          <button
-            v-for="(t, i) in subTracks"
-            :key="'s' + t.id"
-            class="track-item"
-            :class="{ active: t.id === currentSubId }"
-            @click="emit('setSub', t.id)"
-          >
-            {{ trackLabel(t, i) }}
-          </button>
-        </div>
-      </section>
-
-      <!-- A-B 循环 -->
-      <section class="sec">
-        <div class="sec-title">A-B 循环</div>
-        <div class="ab-row">
-          <button class="ab-btn" @click="emit('setAbA')">
-            设 A 点<span v-if="abLoopA !== null">{{ abLoopA.toFixed(1) }}s</span>
-          </button>
-          <button class="ab-btn" @click="emit('setAbB')">
-            设 B 点<span v-if="abLoopB !== null">{{ abLoopB.toFixed(1) }}s</span>
-          </button>
-          <button class="ab-btn warn" @click="emit('clearAb')">清除</button>
-        </div>
-      </section>
-
-      <!-- 逐帧 -->
-      <section class="sec">
-        <div class="sec-title">逐帧</div>
-        <div class="ab-row">
-          <button class="ab-btn" @click="emit('frameBack')">◀ 上一帧</button>
-          <button class="ab-btn" @click="emit('frameForward')">下一帧 ▶</button>
-        </div>
-      </section>
-
       <!-- 快进快退时间 -->
       <section class="sec">
         <div class="sec-title">快进/快退时间：{{ skipSeconds }} 秒</div>
@@ -178,12 +85,39 @@ function confirmDeleteTag(t: TagType) {
         </div>
       </section>
 
-      <!-- 截图 -->
+      <!-- 窗口缩放系数 -->
       <section class="sec">
-        <div class="sec-title">截图</div>
+        <div class="sec-title">窗口缩放系数：{{ windowScale.toFixed(2) }}x</div>
         <div class="ab-row">
-          <button class="ab-btn" @click="emit('screenshot', true)">含字幕</button>
-          <button class="ab-btn" @click="emit('screenshot', false)">仅画面</button>
+          <input
+            type="range"
+            min="0.25"
+            max="3"
+            step="0.05"
+            :value="windowScale"
+            @input="(e) => emit('setWindowScale', Number((e.target as HTMLInputElement).value))"
+            style="flex:1; cursor:pointer"
+          />
+        </div>
+        <p class="empty" style="padding-top:6px">控制打开视频时窗口相对原寸的放大倍数，超出屏幕仍会自动最大化</p>
+      </section>
+
+      <!-- 播放起点 -->
+      <section class="sec">
+        <div class="sec-title">新视频播放起点</div>
+        <div class="type-toggle">
+          <button
+            :class="{ active: resumeMode === 'start' }"
+            @click="emit('setResumeMode', 'start')"
+          >
+            从头开始
+          </button>
+          <button
+            :class="{ active: resumeMode === 'resume' }"
+            @click="emit('setResumeMode', 'resume')"
+          >
+            从上次位置
+          </button>
         </div>
       </section>
 
@@ -243,6 +177,23 @@ function confirmDeleteTag(t: TagType) {
         </div>
       </section>
     </div>
+
+    <!-- 删除确认模态（替代 window.confirm，Tauri WebView2 不支持原生 dialog） -->
+    <Transition name="pop">
+      <div v-if="pendingDelete" class="confirm-mask" @click.self="cancelDeleteTag">
+        <div class="confirm-box">
+          <div class="confirm-title">删除标签类型</div>
+          <p class="confirm-msg">
+            确定要删除标签类型"{{ pendingDelete.name }}"吗？<br />
+            删除后所有视频中该标签的值也会被清除。
+          </p>
+          <div class="confirm-actions">
+            <button class="confirm-btn cancel" @click="cancelDeleteTag">取消</button>
+            <button class="confirm-btn danger" @click="doDeleteTag">删除</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -543,5 +494,70 @@ function confirmDeleteTag(t: TagType) {
 .expand-enter-to,
 .expand-leave-from {
   max-height: 200px;
+}
+
+/* 删除确认模态 */
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+}
+
+.confirm-box {
+  width: 280px;
+  padding: 18px;
+  border-radius: 12px;
+  background: rgba(28, 28, 34, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.confirm-msg {
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.confirm-btn {
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  transition: background 0.15s ease;
+}
+
+.confirm-btn.cancel {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.08);
+}
+.confirm-btn.cancel:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.confirm-btn.danger {
+  color: #fff;
+  background: rgba(232, 70, 70, 0.9);
+}
+.confirm-btn.danger:hover {
+  background: rgba(232, 70, 70, 1);
 }
 </style>

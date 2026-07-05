@@ -24,7 +24,10 @@ const emit = defineEmits<{
   openFile: [];
   closeFile: [];
   toggleSettings: [];
+  togglePlayback: [];
   toggleTagCard: [];
+  rotateCw: [];
+  rotateCcw: [];
 }>();
 
 // —— 音量滑块显隐 ——
@@ -79,14 +82,8 @@ const volumeIcon = computed(() => {
       <!-- 左侧 -->
       <div class="group">
         <button class="icon-btn" title="打开文件" @click="emit('openFile')">📁</button>
-        <button
-          class="icon-btn close"
-          :disabled="!hasFile"
-          title="关闭当前视频"
-          @click="emit('closeFile')"
-        >
-          <span class="close-icon"></span>
-        </button>
+
+        <!-- 播放/暂停：圆形 + 蓝底 + 白色三角/竖条 -->
         <button
           class="icon-btn play"
           :disabled="!hasFile"
@@ -98,21 +95,35 @@ const volumeIcon = computed(() => {
             <span v-else key="play" class="play-icon icon-play"></span>
           </Transition>
         </button>
+
+        <!-- 关闭：方框 + 蓝底 + 白色方块（位于播放与快退之间） -->
         <button
-          class="icon-btn"
+          class="icon-btn ctl"
+          :disabled="!hasFile"
+          title="关闭当前视频"
+          @click="emit('closeFile')"
+        >
+          <span class="ctl-inner"><i class="icon-close-square"></i></span>
+        </button>
+
+        <!-- 快退：方框 + 蓝底 + 白色双左三角 -->
+        <button
+          class="icon-btn ctl"
           :disabled="!hasFile"
           :title="`后退 ${skipSeconds || 10} 秒 (←)`"
           @click="emit('seek', Math.max(0, currentTime - (skipSeconds || 10)))"
         >
-          ⏪
+          <span class="ctl-inner"><i class="icon-back"></i></span>
         </button>
+
+        <!-- 快进：方框 + 蓝底 + 白色双右三角 -->
         <button
-          class="icon-btn"
+          class="icon-btn ctl"
           :disabled="!hasFile"
           :title="`前进 ${skipSeconds || 10} 秒 (→)`"
           @click="emit('seek', Math.min(duration, currentTime + (skipSeconds || 10)))"
         >
-          ⏩
+          <span class="ctl-inner"><i class="icon-fwd"></i></span>
         </button>
       </div>
 
@@ -120,12 +131,22 @@ const volumeIcon = computed(() => {
       <div class="group">
         <!-- 标签 -->
         <button
-          class="icon-btn"
+          class="icon-btn glyph"
           :disabled="!hasFile"
           title="标签 (T)"
           @click="emit('toggleTagCard')"
         >
-          🏷
+          <svg viewBox="0 0 24 24" class="g"><path d="M20.5 13.5 13 21l-9-9V4h8l8.5 9.5ZM7.5 8.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/></svg>
+        </button>
+
+        <!-- 播放操作：无视频时灰色禁用 -->
+        <button
+          class="icon-btn glyph"
+          :disabled="!hasFile"
+          title="播放操作"
+          @click="emit('togglePlayback')"
+        >
+          <svg viewBox="0 0 24 24" class="g"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="5" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.3" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg>
         </button>
 
         <!-- 音量：整个区域 hover 都保持显示，含滑块本体 -->
@@ -154,14 +175,38 @@ const volumeIcon = computed(() => {
           </div>
         </div>
 
-        <!-- 设置 -->
+        <!-- 逆时针旋转 90°（位于顺时针按钮左侧） -->
         <button
-          class="icon-btn"
+          class="icon-btn glyph"
           :disabled="!hasFile"
-          title="设置"
-          @click="emit('toggleSettings')"
+          title="逆时针旋转 90° (Shift+R)"
+          @click.stop.prevent="emit('rotateCcw')"
         >
-          ⚙
+          <svg viewBox="0 0 24 24" class="g">
+            <path d="M5.64 7.64a8 8 0 1 1-1.69 5.28"/>
+            <path d="M5 5v4h4"/>
+          </svg>
+        </button>
+
+        <!-- 顺时针旋转 90° -->
+        <button
+          class="icon-btn glyph"
+          :disabled="!hasFile"
+          title="顺时针旋转 90° (R)"
+          @click.stop.prevent="emit('rotateCw')"
+        >
+          <svg viewBox="0 0 24 24" class="g">
+            <path d="M18.36 7.64a8 8 0 1 0 1.69 5.28"/>
+            <path d="M19 5v4h-4"/>
+          </svg>
+        </button>
+
+        <!-- 设置：常亮，随时可点 -->
+        <button class="icon-btn glyph" title="设置" @click="emit('toggleSettings')">
+          <svg viewBox="0 0 24 24" class="g">
+            <circle cx="12" cy="12" r="3.2"/>
+            <path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V20a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.94 18.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 8.94a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.5Z"/>
+          </svg>
         </button>
 
         <!-- 全屏 -->
@@ -239,23 +284,114 @@ const volumeIcon = computed(() => {
   box-shadow: 0 6px 18px rgba(78, 161, 255, 0.5);
 }
 
-/* 关闭按钮：蓝色底色 + 白色正方形，与快进快退类似 */
-.icon-btn.close {
-  background: var(--color-accent);
-  box-shadow: 0 4px 14px rgba(78, 161, 255, 0.35);
+/* —— 关闭/快退/快进：统一"透明外圈 + 蓝色圆角方块 + 白色几何符号" ——
+   外圈与普通图标按钮完全一致（36×36 透明），所以视觉上不会比其他按钮大 */
+.icon-btn.ctl {
+  background: transparent;
 }
-.icon-btn.close:hover:not(:disabled) {
-  background: var(--color-accent-strong);
-  box-shadow: 0 6px 18px rgba(78, 161, 255, 0.5);
+.icon-btn.ctl:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
 }
 
-/* 关闭按钮：CSS 实心正方形 */
-.close-icon {
+/* 内层蓝色圆角方块 */
+.ctl-inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--color-accent);
+  transition: background var(--dur-fast) ease;
+}
+.icon-btn.ctl:hover:not(:disabled) .ctl-inner {
+  background: var(--color-accent-strong);
+}
+.ctl-inner i {
   display: inline-block;
-  width: 12px;
-  height: 12px;
+}
+
+/* 关闭：白色实心小方块 */
+.icon-close-square {
+  width: 9px;
+  height: 9px;
   background: #fff;
-  border-radius: 2px;
+  border-radius: 1px;
+}
+
+/* —— 面板触发按钮（标签/播放操作/设置）：透明外圈 + 线条图标，统一风格 —— */
+.icon-btn.glyph {
+  background: transparent;
+}
+.icon-btn.glyph:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+.icon-btn.glyph .g {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* 整个 SVG 区域都接收点击，避免点在图形空白处穿透 */
+  pointer-events: all;
+  transition: stroke var(--dur-fast) ease;
+}
+.icon-btn.glyph:hover:not(:disabled) .g {
+  stroke: #fff;
+}
+
+/* 快退：白色双左三角 */
+.icon-back {
+  width: 11px;
+  height: 10px;
+  position: relative;
+}
+.icon-back::before,
+.icon-back::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+.icon-back::before {
+  /* 第一段（左指三角）*/
+  left: 0;
+  border-right: 6px solid #fff;
+}
+.icon-back::after {
+  /* 第二段（左指三角，靠右）*/
+  right: 0;
+  border-right: 6px solid #fff;
+}
+
+/* 快进：白色双右三角 */
+.icon-fwd {
+  width: 11px;
+  height: 10px;
+  position: relative;
+}
+.icon-fwd::before,
+.icon-fwd::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+.icon-fwd::before {
+  left: 0;
+  border-left: 6px solid #fff;
+}
+.icon-fwd::after {
+  right: 0;
+  border-left: 6px solid #fff;
 }
 
 .play-icon {
