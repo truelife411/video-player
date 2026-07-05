@@ -65,6 +65,11 @@ pub fn init(app: &AppHandle) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_video_tags_value ON video_tags(value_text);
         CREATE INDEX IF NOT EXISTS idx_video_tags_type  ON video_tags(type_id);
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         ",
     )?;
 

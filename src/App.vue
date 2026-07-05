@@ -379,9 +379,9 @@ onUnmounted(() => {
             :window-scale="mpv.windowScale.value"
             :resume-mode="mpv.resumeMode.value"
             @close="showSettings = false"
-            @set-skip-seconds="(s) => (mpv.skipSeconds.value = s)"
-            @set-window-scale="(s) => (mpv.windowScale.value = s)"
-            @set-resume-mode="(m) => (mpv.resumeMode.value = m)"
+            @set-skip-seconds="(s) => mpv.setSkipSeconds(s)"
+            @set-window-scale="(s) => mpv.setWindowScale(s)"
+            @set-resume-mode="(m) => mpv.setResumeMode(m)"
             @create-tag-type="(name, vt, opts) => tags.createTagType(name, vt, opts)"
             @delete-tag-type="(id) => tags.deleteTagType(id)"
           />

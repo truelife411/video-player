@@ -341,3 +341,31 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ============ 设置（key-value 持久化） ============
+
+/// 读取一个设置项，不存在则返回 None
+#[tauri::command]
+pub fn get_setting(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    let conn = db::open(&app).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT value FROM settings WHERE key=?1")
+        .map_err(|e| e.to_string())?;
+    let v = stmt
+        .query_row(params![&key], |r| r.get::<_, String>(0))
+        .ok();
+    Ok(v)
+}
+
+/// 写入一个设置项（覆盖）
+#[tauri::command]
+pub fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    let conn = db::open(&app).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![&key, &value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}

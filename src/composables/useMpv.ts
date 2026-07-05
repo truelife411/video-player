@@ -603,6 +603,8 @@ export function useMpv() {
 
   onMounted(() => {
     initMpv().catch((e) => console.error("mpv init failed:", e));
+    // 加载持久化设置（快进秒数/窗口缩放/播放起点）
+    loadSettings();
     progressTimer = setInterval(() => saveProgress(), 5000);
   });
 
@@ -622,6 +624,56 @@ export function useMpv() {
 
   // 新视频播放起点："start"=从头、"resume"=从上次位置
   const resumeMode = ref<"start" | "resume">("resume");
+
+  // —— 设置持久化：写入 SQLite settings 表 ——
+  async function persistSetting(key: string, value: string) {
+    try {
+      await invoke("set_setting", { key, value });
+    } catch (e) {
+      console.warn(`[persistSetting] ${key} 失败:`, e);
+    }
+  }
+
+  // 三个设置项的持久化 setter（改值 + 写库）
+  async function setSkipSeconds(v: number) {
+    skipSeconds.value = v;
+    await persistSetting("skip_seconds", String(v));
+  }
+  async function setWindowScale(v: number) {
+    windowScale.value = v;
+    await persistSetting("window_scale", String(v));
+  }
+  async function setResumeMode(m: "start" | "resume") {
+    resumeMode.value = m;
+    await persistSetting("resume_mode", m);
+  }
+
+  // 启动时从数据库加载设置（覆盖默认值）
+  async function loadSettings() {
+    const read = async <T>(key: string, parse: (s: string) => T | null): Promise<T | null> => {
+      try {
+        const v = await invoke<string | null>("get_setting", { key });
+        if (v == null) return null;
+        return parse(v);
+      } catch {
+        return null;
+      }
+    };
+    const skip = await read("skip_seconds", (s) => {
+      const n = parseInt(s, 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    });
+    if (skip) skipSeconds.value = skip;
+    const scale = await read("window_scale", (s) => {
+      const n = parseFloat(s);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    });
+    if (scale) windowScale.value = scale;
+    const mode = await read<"start" | "resume">("resume_mode", (s) =>
+      s === "start" || s === "resume" ? s : null
+    );
+    if (mode) resumeMode.value = mode;
+  }
 
   // 关闭当前文件
   async function closeFile() {
@@ -652,6 +704,8 @@ export function useMpv() {
     openFileDialog, openFile, closeFile, loadSubtitle, loadSubtitleDialog, openDroppedFile,
     // 播放
     togglePlay, seekTo, seekBy, setVolume, toggleMute, setSpeed, saveProgress,
+    // 设置持久化
+    setSkipSeconds, setWindowScale, setResumeMode, loadSettings,
     // 轨道
     setAudioTrack, setSubTrack, refreshTracks,
     // 截图

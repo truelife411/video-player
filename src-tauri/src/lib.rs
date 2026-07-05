@@ -43,6 +43,8 @@ pub fn run() {
             commands::set_video_tag,
             commands::search_videos,
             commands::reveal_in_explorer,
+            commands::get_setting,
+            commands::set_setting,
         ])
         .setup(|app| {
             // 初始化数据库（schema + 预置标签）
