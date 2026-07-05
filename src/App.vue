@@ -1,0 +1,538 @@
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, computed } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { useMpv } from "./composables/useMpv";
+import { useTags } from "./composables/useTags";
+import { useSearch } from "./composables/useSearch";
+import ControlBar from "./components/ControlBar.vue";
+import SettingsPanel from "./components/SettingsPanel.vue";
+import TagCard from "./components/TagCard.vue";
+import SearchOverlay from "./components/SearchOverlay.vue";
+
+const mpv = useMpv();
+const tags = useTags();
+const search = useSearch();
+
+// —— 设置面板 ——
+const showSettings = ref(false);
+function toggleSettings() {
+  if (!mpv.currentFile.value) return;
+  showSettings.value = !showSettings.value;
+}
+
+// —— 标签卡片（T 键或右键唤出）——
+const showTagCard = ref(false);
+const videoHash = ref<string>("");
+const tagCardLoading = ref(false);
+async function toggleTagCard() {
+  if (!mpv.currentFile.value) {
+    showToast("请先打开视频");
+    return;
+  }
+  if (tagCardLoading.value) return;
+  if (showTagCard.value) {
+    showTagCard.value = false;
+    return;
+  }
+  tagCardLoading.value = true;
+  try {
+    const h = await invoke<string>("register_video", { path: mpv.currentFile.value });
+    videoHash.value = h;
+    await tags.loadTagTypes();
+    await tags.loadVideoTags(h);
+    showTagCard.value = true;
+  } catch (e) {
+    console.error("[标签] 加载失败:", e);
+    showToast("无法加载标签");
+  } finally {
+    tagCardLoading.value = false;
+  }
+}
+
+// —— Toast 提示（截图等操作反馈）——
+const toastMsg = ref("");
+let toastTimer: number | null = null;
+function showToast(msg: string) {
+  toastMsg.value = msg;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (toastMsg.value = ""), 2500);
+}
+
+// —— 搜索浮层（Ctrl+F）——
+const showSearch = ref(false);
+function toggleSearch() {
+  showSearch.value = !showSearch.value;
+  if (!showSearch.value) search.clear();
+}
+async function searchPlay(path: string) {
+  await mpv.openFile(path);
+}
+async function searchReveal(path: string) {
+  try {
+    await invoke("reveal_in_explorer", { path });
+  } catch (e) {
+    console.error("[定位] 失败:", e);
+    showToast("无法定位文件");
+  }
+}
+
+// 截图并提示保存路径
+async function takeScreenshot(withSubs: boolean) {
+  try {
+    const path = await mpv.screenshot(withSubs);
+    showToast(`截图已保存：${path}`);
+  } catch (e) {
+    console.error("[截图] 失败:", e);
+    showToast("截图失败");
+  }
+}
+
+// —— 窗口 / 全屏 ——
+const appWindow = getCurrentWindow();
+const isFullscreen = ref(false);
+
+// 监听窗口全屏状态变化（F11 或系统快捷键也能同步）
+let unlistenFullscreen: UnlistenFn | null = null;
+
+async function toggleFullscreen() {
+  try {
+    const next = !isFullscreen.value;
+    await appWindow.setFullscreen(next);
+    isFullscreen.value = next;
+  } catch (e) {
+    console.error("[全屏] 失败:", e);
+  }
+}
+
+// —— 控制栏自动隐藏 ——
+const controlsVisible = ref(true);
+let hideTimer: number | null = null;
+
+function showControls() {
+  controlsVisible.value = true;
+  if (hideTimer) clearTimeout(hideTimer);
+  hideTimer = window.setTimeout(() => {
+    if (mpv.isPlaying.value) controlsVisible.value = false;
+  }, 3000);
+}
+
+function onMouseMove() {
+  showControls();
+}
+
+// —— 单击/双击画面处理 ——
+// 单击=播放/暂停，双击=全屏。用延时区分，避免单击触发后双击又触发。
+let clickTimer: number | null = null;
+function onSurfaceClick() {
+  if (clickTimer) return; // 双击场景下，第二次单击已被抑制
+  clickTimer = window.setTimeout(() => {
+    clickTimer = null;
+    mpv.togglePlay();
+    showControls();
+  }, 220);
+}
+
+function onSurfaceDblClick() {
+  if (clickTimer) {
+    clearTimeout(clickTimer);
+    clickTimer = null;
+  }
+  toggleFullscreen();
+}
+
+// —— 拖拽文件（Tauri 2 webview 拖拽事件，非浏览器 drop）——
+let unlistenDrag: UnlistenFn | null = null;
+
+// —— 音量反馈：键盘调音量时短暂弹出滑块 ——
+const volumeFlash = ref(0);
+function flashVolume() {
+  volumeFlash.value++;
+}
+
+// —— 快捷键 ——
+function onKeyDown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement;
+  if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+
+  switch (e.code) {
+    case "Space":
+      e.preventDefault();
+      mpv.togglePlay();
+      showControls();
+      break;
+    case "ArrowRight":
+      e.preventDefault();
+      mpv.seekBy(10);
+      showControls();
+      break;
+    case "ArrowLeft":
+      e.preventDefault();
+      mpv.seekBy(-10);
+      showControls();
+      break;
+    case "ArrowUp":
+      e.preventDefault();
+      mpv.setVolume(Math.min(100, mpv.volume.value + 5));
+      flashVolume();
+      showControls();
+      break;
+    case "ArrowDown":
+      e.preventDefault();
+      mpv.setVolume(Math.max(0, mpv.volume.value - 5));
+      flashVolume();
+      showControls();
+      break;
+    case "KeyM":
+      mpv.toggleMute();
+      flashVolume();
+      break;
+    case "KeyF":
+      // Ctrl+F = 搜索，单独 F = 全屏
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        toggleSearch();
+      } else {
+        toggleFullscreen();
+      }
+      break;
+    case "KeyT":
+      toggleTagCard();
+      break;
+    case "KeyS":
+      // 截图（默认含字幕）
+      if (mpv.currentFile.value) takeScreenshot(true);
+      break;
+    case "KeyC":
+      // 切换字幕开关：当前有字幕则禁用，否则启用第一个
+      if (mpv.currentSubId.value !== 0) {
+        mpv.setSubTrack(0);
+      } else if (mpv.subTracks.value.length > 0) {
+        mpv.setSubTrack(mpv.subTracks.value[0].id);
+      }
+      break;
+    case "Comma":
+      // 逐帧后退
+      if (mpv.currentFile.value) mpv.frameBackStep();
+      break;
+    case "Period":
+      // 逐帧前进
+      if (mpv.currentFile.value) mpv.frameStep();
+      break;
+  }
+}
+
+// —— 顶部文件名 ——
+const displayName = computed(() => {
+  if (mpv.currentFileName.value) return mpv.currentFileName.value;
+  if (mpv.currentFile.value) return mpv.currentFile.value.split(/[\\/]/).pop() || "";
+  return "";
+});
+
+onMounted(async () => {
+  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("mousemove", onMouseMove);
+  showControls();
+
+  // 监听全屏状态（兼容系统快捷键）
+  unlistenFullscreen = await appWindow.onResized(() => {
+    appWindow.isFullscreen().then((f) => (isFullscreen.value = f));
+  });
+
+  // Tauri 2 拖拽：用 webview 的 onDragDropEvent
+  const webview = getCurrentWebview();
+  unlistenDrag = await webview.onDragDropEvent(async (event) => {
+    if (event.payload.type === "drop") {
+      const paths = event.payload.paths;
+      if (paths && paths.length > 0) {
+        await mpv.openDroppedFile(paths[0]);
+      }
+    }
+  });
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("mousemove", onMouseMove);
+  if (hideTimer) clearTimeout(hideTimer);
+  if (clickTimer) clearTimeout(clickTimer);
+  unlistenFullscreen?.();
+  unlistenDrag?.();
+});
+</script>
+
+<template>
+  <!-- 视频表面：透明，单击=播放/暂停，双击=全屏，右键=标签卡片 -->
+  <div
+    class="surface"
+    :class="{ 'cursor-hidden': !controlsVisible && mpv.isPlaying.value }"
+    @click="onSurfaceClick"
+    @dblclick="onSurfaceDblClick"
+    @contextmenu.prevent="toggleTagCard"
+  >
+    <!-- 顶部：文件名（控件层，自动隐藏） -->
+    <Transition name="fade">
+      <div v-show="controlsVisible && displayName" class="overlay-top" @click.stop>
+        <span class="badge" v-if="!mpv.isReady.value">初始化中…</span>
+        <span class="filename">{{ displayName }}</span>
+        <span class="badge hint" v-if="mpv.currentFile.value" title="按 T 或右键打标签">🏷 标签 (T)</span>
+      </div>
+    </Transition>
+
+    <!-- 标签卡片（右上角浮层） -->
+    <Transition name="pop">
+      <TagCard
+        v-if="showTagCard"
+        class="tagcard-pos"
+        :tag-types="tags.tagTypes.value"
+        :get-value="tags.getValue"
+        :hash="videoHash"
+        @close="showTagCard = false"
+        @set-value="(id, v) => tags.setValue(id, v)"
+        @create-type="(name, vt, opts) => tags.createTagType(name, vt, opts)"
+      />
+    </Transition>
+
+    <!-- 中央占位（未打开文件时的提示，打开文件后优雅淡出） -->
+    <Transition name="hint-fade">
+      <div v-if="mpv.isReady.value && !mpv.currentFile.value" class="empty-hint" @click.stop>
+        <div class="empty-icon">🎬</div>
+        <p>拖拽视频文件到此处，或点击下方"打开文件"</p>
+      </div>
+    </Transition>
+
+    <!-- 底部：控制栏（自动隐藏） -->
+    <Transition name="slide-up">
+      <div v-show="controlsVisible" class="bottom-wrap">
+        <!-- 设置面板（浮在控制栏右上） -->
+        <Transition name="pop">
+          <SettingsPanel
+            v-if="showSettings"
+            class="settings-pos"
+            :speed="mpv.speed.value"
+            :audio-tracks="mpv.audioTracks.value"
+            :sub-tracks="mpv.subTracks.value"
+            :current-audio-id="mpv.currentAudioId.value"
+            :current-sub-id="mpv.currentSubId.value"
+            :ab-loop-a="mpv.abLoopA.value"
+            :ab-loop-b="mpv.abLoopB.value"
+            @close="showSettings = false"
+            @set-speed="(s) => mpv.setSpeed(s)"
+            @set-audio="(id) => mpv.setAudioTrack(id)"
+            @set-sub="(id) => mpv.setSubTrack(id)"
+            @load-subtitle="mpv.loadSubtitleDialog()"
+            @screenshot="(w) => takeScreenshot(w)"
+            @set-ab-a="mpv.setAbLoopA()"
+            @set-ab-b="mpv.setAbLoopB()"
+            @clear-ab="mpv.clearAbLoop()"
+            @frame-back="mpv.frameBackStep()"
+            @frame-forward="mpv.frameStep()"
+          />
+        </Transition>
+
+        <ControlBar
+          :is-playing="mpv.isPlaying.value"
+          :current-time="mpv.currentTime.value"
+          :duration="mpv.duration.value"
+          :volume="mpv.volume.value"
+          :is-muted="mpv.isMuted.value"
+          :has-file="!!mpv.currentFile.value"
+          :is-fullscreen="isFullscreen"
+          :force-show-volume="volumeFlash"
+          @toggle-play="mpv.togglePlay()"
+          @seek="(s) => mpv.seekTo(s)"
+          @set-volume="(v) => mpv.setVolume(v)"
+          @toggle-mute="mpv.toggleMute()"
+          @toggle-fullscreen="toggleFullscreen"
+          @open-file="mpv.openFileDialog()"
+          @toggle-settings="toggleSettings"
+        />
+      </div>
+    </Transition>
+
+    <!-- Toast 提示（截图等反馈） -->
+    <Transition name="toast">
+      <div v-if="toastMsg" class="toast" @click.stop>{{ toastMsg }}</div>
+    </Transition>
+
+    <!-- 搜索浮层（Ctrl+F） -->
+    <Transition name="fade">
+      <SearchOverlay
+        v-if="showSearch"
+        :keyword="search.keyword.value"
+        :results="search.results.value"
+        :searching="search.searching.value"
+        @close="showSearch = false"
+        @updatekeyword="(k: string) => search.setKeyword(k)"
+        @play="(p: string) => searchPlay(p)"
+        @reveal="(p: string) => searchReveal(p)"
+      />
+    </Transition>
+  </div>
+</template>
+
+<style scoped>
+.surface {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: default;
+  user-select: none;
+}
+
+/* 底部容器：控制栏 + 浮在上方的设置面板 */
+.bottom-wrap {
+  position: relative;
+}
+
+.settings-pos {
+  position: absolute;
+  right: 16px;
+  bottom: calc(100% + 8px);
+}
+
+.surface.cursor-hidden {
+  cursor: none;
+}
+
+/* 顶部文件名条 */
+.overlay-top {
+  flex-shrink: 0;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent);
+}
+
+.badge {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
+}
+
+.badge.hint {
+  margin-left: auto;
+  font-size: 11px;
+  cursor: pointer;
+}
+.badge.hint:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* 标签卡片：右上角浮层，z-index 极高确保在视频之上 */
+.tagcard-pos {
+  position: absolute;
+  top: 60px;
+  right: 20px;
+  z-index: 9999;
+}
+
+.filename {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 空状态提示：居中但用 flex 占位，不影响控制栏贴底 */
+.empty-hint {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
+.empty-icon {
+  font-size: 56px;
+  opacity: 0.6;
+}
+
+.empty-hint p {
+  font-size: 14px;
+}
+
+/* 过渡动画 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+.slide-up-enter-from,
+.slide-up-leave-to {
+  transform: translateY(100%);
+  opacity: 0;
+}
+
+/* 设置面板弹出过渡 */
+.pop-enter-active,
+.pop-leave-active {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.pop-enter-from,
+.pop-leave-to {
+  transform: translateY(12px) scale(0.96);
+  opacity: 0;
+}
+
+/* Toast 提示 */
+.toast {
+  position: absolute;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 70%;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(20, 20, 26, 0.9);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  word-break: break-all;
+  pointer-events: none;
+  z-index: 50;
+}
+
+/* 空状态提示淡出（打开文件时优雅消失） */
+.hint-fade-enter-active,
+.hint-fade-leave-active {
+  transition: opacity var(--dur-normal) var(--ease-out), transform var(--dur-normal) var(--ease-out);
+}
+.hint-fade-enter-from,
+.hint-fade-leave-to {
+  opacity: 0;
+  transform: scale(0.95);
+}
+
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+}
+</style>

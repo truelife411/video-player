@@ -1,0 +1,33 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# libmpv 二进制（体积大，用户按 README 自行下载）
+src-tauri/lib/*.dll
+
+# 数据库 / 用户数据
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志
+*.log
+
+# mpv 截图产物（测试时生成在工作目录）
+mpv-shot*.jpg
+mpv-shot*.png
