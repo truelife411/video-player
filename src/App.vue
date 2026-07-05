@@ -27,6 +27,15 @@ const anyOverlayOpen = computed(
 );
 function toggleSettings() {
   if (!mpv.currentFile.value) return;
+  // 首次打开设置时加载标签类型，并确保预设标签存在（修复误删）
+  if (!showSettings.value) {
+    if (tags.tagTypes.value.length === 0) {
+      tags.loadTagTypes();
+    }
+    tags.ensurePresets().then(() => {
+      if (tags.tagTypes.value.length === 0) tags.loadTagTypes();
+    });
+  }
   showSettings.value = !showSettings.value;
 }
 
@@ -249,6 +258,9 @@ onMounted(async () => {
   window.addEventListener("mousemove", onMouseMove);
   showControls();
 
+  // 启动时确保预设标签存在（修复误删）
+  tags.ensurePresets();
+
   // 监听全屏状态（兼容系统快捷键）
   unlistenFullscreen = await appWindow.onResized(() => {
     appWindow.isFullscreen().then((f) => (isFullscreen.value = f));
@@ -293,7 +305,6 @@ onUnmounted(() => {
       <div v-show="controlsVisible && displayName" class="overlay-top" @click.stop>
         <span class="badge" v-if="!mpv.isReady.value">初始化中…</span>
         <span class="filename">{{ displayName }}</span>
-        <span class="badge hint" v-if="mpv.currentFile.value" title="按 T 或右键打标签">🏷 标签 (T)</span>
       </div>
     </Transition>
 
@@ -307,7 +318,6 @@ onUnmounted(() => {
         :hash="videoHash"
         @close="showTagCard = false"
         @set-value="(id, v) => tags.setValue(id, v)"
-        @create-type="(name, vt, opts) => tags.createTagType(name, vt, opts)"
       />
     </Transition>
 
@@ -335,6 +345,7 @@ onUnmounted(() => {
             :ab-loop-a="mpv.abLoopA.value"
             :ab-loop-b="mpv.abLoopB.value"
             :skip-seconds="mpv.skipSeconds.value"
+            :tag-types="tags.tagTypes.value"
             @close="showSettings = false"
             @set-speed="(s) => mpv.setSpeed(s)"
             @set-audio="(id) => mpv.setAudioTrack(id)"
@@ -347,6 +358,8 @@ onUnmounted(() => {
             @frame-back="mpv.frameBackStep()"
             @frame-forward="mpv.frameStep()"
             @set-skip-seconds="(s) => mpv.skipSeconds.value = s"
+            @create-tag-type="(name, vt, opts) => tags.createTagType(name, vt, opts)"
+            @delete-tag-type="(id) => tags.deleteTagType(id)"
           />
         </Transition>
 
@@ -368,6 +381,7 @@ onUnmounted(() => {
           @open-file="mpv.openFileDialog()"
           @close-file="mpv.closeFile()"
           @toggle-settings="toggleSettings"
+          @toggle-tag-card="toggleTagCard"
         />
       </div>
     </Transition>

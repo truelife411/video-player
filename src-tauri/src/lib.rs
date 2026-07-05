@@ -39,6 +39,7 @@ pub fn run() {
             commands::list_tag_types,
             commands::create_tag_type,
             commands::delete_tag_type,
+            commands::ensure_presets,
             commands::list_video_tags,
             commands::set_video_tag,
             commands::search_videos,

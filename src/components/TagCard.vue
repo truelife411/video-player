@@ -11,7 +11,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   setValue: [typeId: number, value: string];
-  createType: [name: string, valueType: "enum" | "free", options: string[]];
 }>();
 
 // 星级专用渲染
@@ -30,28 +29,6 @@ async function setStar(t: TagType, n: number) {
 
 // 枚举型（非星级）：下拉
 // 自由型：输入框
-
-// 新建标签类型弹层
-const showCreate = ref(false);
-const newName = ref("");
-const newType = ref<"enum" | "free">("enum");
-const newOptions = ref("");
-
-function submitCreate() {
-  const name = newName.value.trim();
-  if (!name) return;
-  const opts =
-    newType.value === "enum"
-      ? newOptions.value
-          .split(/[,\n]/)
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [];
-  emit("createType", name, newType.value, opts);
-  showCreate.value = false;
-  newName.value = "";
-  newOptions.value = "";
-}
 
 // 缓存：自由型输入的本地值（避免每次输入都写库）
 const freeInputs = ref<Record<number, string>>({});
@@ -136,33 +113,10 @@ const title = computed(() => (props.hash ? "视频标签" : "无视频"));
         </div>
       </div>
 
-      <!-- 新建按钮 -->
-      <button class="add-type-btn" @click="showCreate = !showCreate">+ 新建标签类型</button>
-
-      <!-- 新建表单 -->
-      <Transition name="expand">
-        <div v-if="showCreate" class="create-form">
-          <input class="text-input" v-model="newName" placeholder="标签名（如：导演）" />
-          <div class="type-toggle">
-            <button :class="{ active: newType === 'enum' }" @click="newType = 'enum'">
-              枚举（下拉）
-            </button>
-            <button :class="{ active: newType === 'free' }" @click="newType = 'free'">
-              自由（文本）
-            </button>
-          </div>
-          <textarea
-            v-if="newType === 'enum'"
-            class="textarea"
-            v-model="newOptions"
-            placeholder="候选值，逗号或换行分隔，如：诺兰, 张艺谋, 卡梅隆"
-            rows="3"
-          ></textarea>
-          <button class="submit-btn" @click="submitCreate" :disabled="!newName.trim()">
-            创建
-          </button>
-        </div>
-      </Transition>
+      <!-- 空状态 -->
+      <p v-if="tagTypes.length === 0" style="color:rgba(255,255,255,0.4);font-size:13px;text-align:center;padding:12px 0">
+        暂无标签类型，请在设置 → 标签管理中新建
+      </p>
     </div>
   </div>
 </template>
@@ -259,8 +213,7 @@ const title = computed(() => (props.hash ? "视频标签" : "无视频"));
 
 /* 下拉/输入 */
 .select,
-.text-input,
-.textarea {
+.text-input {
   width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
@@ -274,13 +227,8 @@ const title = computed(() => (props.hash ? "视频标签" : "无视频"));
 .select option {
   background: #1a1a20;
 }
-.text-input:focus,
-.textarea:focus {
+.text-input:focus {
   border-color: rgba(78, 161, 255, 0.6);
-}
-.textarea {
-  resize: vertical;
-  font-family: inherit;
 }
 
 .free-input {
@@ -297,76 +245,5 @@ const title = computed(() => (props.hash ? "视频标签" : "无视频"));
 }
 .save-btn:hover {
   background: #4ea1ff;
-}
-
-/* 新建 */
-.add-type-btn {
-  margin-top: 14px;
-  width: 100%;
-  padding: 10px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.7);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px dashed rgba(255, 255, 255, 0.2);
-}
-.add-type-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-}
-
-.create-form {
-  margin-top: 10px;
-  padding: 12px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.type-toggle {
-  display: flex;
-  gap: 4px;
-}
-.type-toggle button {
-  flex: 1;
-  padding: 6px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.7);
-  background: rgba(255, 255, 255, 0.05);
-}
-.type-toggle button.active {
-  background: rgba(78, 161, 255, 0.25);
-  color: #fff;
-}
-
-.submit-btn {
-  padding: 8px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #fff;
-  background: #4ea1ff;
-}
-.submit-btn:disabled {
-  opacity: 0.4;
-}
-
-/* 展开/收起动画 */
-.expand-enter-active,
-.expand-leave-active {
-  transition: max-height 0.25s ease, opacity 0.25s ease, margin 0.25s ease;
-  overflow: hidden;
-}
-.expand-enter-from,
-.expand-leave-to {
-  max-height: 0;
-  opacity: 0;
-  margin-top: 0;
-}
-.expand-enter-to,
-.expand-leave-from {
-  max-height: 300px;
 }
 </style>

@@ -211,13 +211,30 @@ pub fn create_tag_type(
     Ok(id)
 }
 
-/// 删除自定义标签类型（预置的也允许删，用户不想要的话）
+/// 删除标签类型（预设标签不可删除）
 #[tauri::command]
 pub fn delete_tag_type(app: AppHandle, type_id: i64) -> Result<(), String> {
     let conn = db::open(&app).map_err(|e| e.to_string())?;
+    let is_preset: bool = conn
+        .query_row(
+            "SELECT is_preset FROM tag_types WHERE id=?1",
+            params![type_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|v| v != 0)
+        .map_err(|e| e.to_string())?;
+    if is_preset {
+        return Err("预设标签不可删除".into());
+    }
     conn.execute("DELETE FROM tag_types WHERE id=?1", params![type_id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 确保预设标签存在（幂等，用于修复误删）
+#[tauri::command]
+pub fn ensure_presets(app: AppHandle) -> Result<(), String> {
+    db::ensure_presets(&app).map_err(|e| e.to_string())
 }
 
 // ============ 视频标签 命令 ============

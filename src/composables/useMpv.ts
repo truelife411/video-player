@@ -3,6 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { pictureDir, join } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   init,
   command,
@@ -55,6 +56,8 @@ export function useMpv() {
   const currentSubId = ref<number>(0); // 0 = 禁用
   // 画面
   const aspectRatio = ref<string>("Default"); // Default / 16:9 / 4:3 / ...
+  const videoWidth = ref(0);
+  const videoHeight = ref(0);
   // AB 循环
   const abLoopA = ref<number | null>(null);
   const abLoopB = ref<number | null>(null);
@@ -115,6 +118,8 @@ export function useMpv() {
         ["volume", "double"],
         ["mute", "flag"],
         ["speed", "double"],
+        ["video-params/w", "double"],
+        ["video-params/h", "double"],
       ],
     });
 
@@ -127,6 +132,8 @@ export function useMpv() {
         ["volume", "double"],
         ["mute", "flag"],
         ["speed", "double"],
+        ["video-params/w", "double"],
+        ["video-params/h", "double"],
       ],
       ({ name, data }) => {
         switch (name) {
@@ -150,6 +157,12 @@ export function useMpv() {
             break;
           case "speed":
             if (typeof data === "number") speed.value = data;
+            break;
+          case "video-params/w":
+            if (typeof data === "number") videoWidth.value = data;
+            break;
+          case "video-params/h":
+            if (typeof data === "number") videoHeight.value = data;
             break;
         }
       }
@@ -180,6 +193,61 @@ export function useMpv() {
           invoke("set_video_tag", { videoHash: h, typeId: 1, value: String(stars) })
             .catch((e) => console.error("[自动标注星级] 失败:", e));
         }
+        // 自动检测视频分辨率并标注画质（仅当未手动设置时）
+        setTimeout(async () => {
+          try {
+            if (videoWidth.value <= 0 || videoHeight.value <= 0) return;
+            // 获取画质标签的 type_id（name='画质'）
+            const types = await invoke<{ id: number; name: string }[]>("list_tag_types");
+            const qualityType = types.find((t: { name: string }) => t.name === "画质");
+            if (!qualityType) return;
+            // 检查是否已手动设置
+            const existingTags = await invoke<{ type_id: number; value: string }[]>(
+              "list_video_tags",
+              { videoHash: h }
+            );
+            const existingQuality = existingTags.find(
+              (t: { type_id: number }) => t.type_id === qualityType.id
+            );
+            if (existingQuality && existingQuality.value) return; // 已有值，跳过
+            // 根据分辨率映射画质
+            const vh = videoHeight.value;
+            let quality = "480p";
+            if (vh >= 2160) quality = "4K";
+            else if (vh >= 1080) quality = "1080p";
+            else if (vh >= 720) quality = "720p";
+            await invoke("set_video_tag", {
+              videoHash: h, // 注意这里 h 是 hash 变量
+              typeId: qualityType.id,
+              value: quality,
+            });
+          } catch (e) {
+            console.warn("[自动标注画质] 失败:", e);
+          }
+        }, 1200);
+        // 根据视频分辨率自动调整窗口大小
+        setTimeout(async () => {
+          try {
+            const w = videoWidth.value;
+            const vh2 = videoHeight.value;
+            if (w <= 0 || vh2 <= 0) return;
+            const screenW = window.screen.availWidth;
+            const screenH = window.screen.availHeight;
+            const maxW = Math.round(screenW * 0.9);
+            const maxH = Math.round(screenH * 0.85);
+            let targetW = w;
+            let targetH = vh2;
+            if (targetW > maxW || targetH > maxH) {
+              const scale = Math.min(maxW / targetW, maxH / targetH);
+              targetW = Math.round(targetW * scale);
+              targetH = Math.round(targetH * scale);
+            }
+            const appWindow = getCurrentWindow();
+            await appWindow.setSize(new LogicalSize(targetW, targetH));
+          } catch (e) {
+            console.warn("[自动调整窗口] 失败:", e);
+          }
+        }, 1500);
         try {
           const info = await invoke<{ play_position: number; duration: number } | null>(
             "get_video",
@@ -424,6 +492,7 @@ export function useMpv() {
     currentFile, currentFileName, speed, videoHash,
     audioTracks, subTracks, currentAudioId, currentSubId,
     aspectRatio, abLoopA, abLoopB, skipSeconds,
+    videoWidth, videoHeight,
     // 文件
     openFileDialog, openFile, closeFile, loadSubtitle, loadSubtitleDialog, openDroppedFile,
     // 播放

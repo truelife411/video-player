@@ -70,6 +70,14 @@ pub fn init(app: &AppHandle) -> rusqlite::Result<()> {
 
     // 预置标签类型：星级（枚举 1-5）、画质（枚举 480p/720p/1080p/4K）
     // 幂等插入
+    ensure_presets(app)?;
+
+    Ok(())
+}
+
+/// 确保预置标签存在（幂等，可随时调用来修复误删）
+pub fn ensure_presets(app: &AppHandle) -> rusqlite::Result<()> {
+    let conn = open(app)?;
     conn.execute(
         "INSERT OR IGNORE INTO tag_types (name, value_type, is_preset, sort_order)
          VALUES ('星级','enum',1,1)",
@@ -103,6 +111,5 @@ pub fn init(app: &AppHandle) -> rusqlite::Result<()> {
             rusqlite::params![quality_id, v, i as i64],
         )?;
     }
-
     Ok(())
 }

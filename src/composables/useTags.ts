@@ -101,6 +101,15 @@ export function useTags() {
     }
   }
 
+  // 确保预设标签存在（修复误删）
+  async function ensurePresets() {
+    try {
+      await invoke("ensure_presets");
+    } catch (e) {
+      console.error("[ensurePresets] 失败:", e);
+    }
+  }
+
   return {
     tagTypes,
     currentVideoTags,
@@ -112,5 +121,6 @@ export function useTags() {
     setValue,
     createTagType,
     deleteTagType,
+    ensurePresets,
   };
 }

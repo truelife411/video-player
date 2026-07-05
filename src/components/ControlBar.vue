@@ -24,6 +24,7 @@ const emit = defineEmits<{
   openFile: [];
   closeFile: [];
   toggleSettings: [];
+  toggleTagCard: [];
 }>();
 
 // —— 音量滑块显隐 ——
@@ -79,6 +80,14 @@ const volumeIcon = computed(() => {
       <div class="group">
         <button class="icon-btn" title="打开文件" @click="emit('openFile')">📁</button>
         <button
+          class="icon-btn close"
+          :disabled="!hasFile"
+          title="关闭当前视频"
+          @click="emit('closeFile')"
+        >
+          <span class="close-icon"></span>
+        </button>
+        <button
           class="icon-btn play"
           :disabled="!hasFile"
           :title="isPlaying ? '暂停 (空格)' : '播放 (空格)'"
@@ -105,18 +114,20 @@ const volumeIcon = computed(() => {
         >
           ⏩
         </button>
-        <button
-          class="icon-btn close"
-          :disabled="!hasFile"
-          title="关闭当前视频"
-          @click="emit('closeFile')"
-        >
-          ✕
-        </button>
       </div>
 
       <!-- 右侧 -->
       <div class="group">
+        <!-- 标签 -->
+        <button
+          class="icon-btn"
+          :disabled="!hasFile"
+          title="标签 (T)"
+          @click="emit('toggleTagCard')"
+        >
+          🏷
+        </button>
+
         <!-- 音量：整个区域 hover 都保持显示，含滑块本体 -->
         <div
           class="volume-wrap"
@@ -228,8 +239,23 @@ const volumeIcon = computed(() => {
   box-shadow: 0 6px 18px rgba(78, 161, 255, 0.5);
 }
 
+/* 关闭按钮：蓝色底色 + 白色正方形，与快进快退类似 */
+.icon-btn.close {
+  background: var(--color-accent);
+  box-shadow: 0 4px 14px rgba(78, 161, 255, 0.35);
+}
 .icon-btn.close:hover:not(:disabled) {
-  background: rgba(255, 80, 80, 0.2);
+  background: var(--color-accent-strong);
+  box-shadow: 0 6px 18px rgba(78, 161, 255, 0.5);
+}
+
+/* 关闭按钮：CSS 实心正方形 */
+.close-icon {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 2px;
 }
 
 .play-icon {
