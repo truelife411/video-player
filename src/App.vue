@@ -139,7 +139,8 @@ function onMouseMove() {
 // 单击=播放/暂停，双击=全屏。用延时区分，避免单击触发后双击又触发。
 let clickTimer: number | null = null;
 function onSurfaceClick() {
-  if (clickTimer) return; // 双击场景下，第二次单击已被抑制
+  if (anyOverlayOpen.value) return; // 浮层打开时忽略画面点击
+  if (clickTimer) return;
   clickTimer = window.setTimeout(() => {
     clickTimer = null;
     mpv.togglePlay();
@@ -177,12 +178,12 @@ function onKeyDown(e: KeyboardEvent) {
       break;
     case "ArrowRight":
       e.preventDefault();
-      mpv.seekBy(10);
+      mpv.seekBy(mpv.skipSeconds.value);
       showControls();
       break;
     case "ArrowLeft":
       e.preventDefault();
-      mpv.seekBy(-10);
+      mpv.seekBy(-mpv.skipSeconds.value);
       showControls();
       break;
     case "ArrowUp":
@@ -333,6 +334,7 @@ onUnmounted(() => {
             :current-sub-id="mpv.currentSubId.value"
             :ab-loop-a="mpv.abLoopA.value"
             :ab-loop-b="mpv.abLoopB.value"
+            :skip-seconds="mpv.skipSeconds.value"
             @close="showSettings = false"
             @set-speed="(s) => mpv.setSpeed(s)"
             @set-audio="(id) => mpv.setAudioTrack(id)"
@@ -344,6 +346,7 @@ onUnmounted(() => {
             @clear-ab="mpv.clearAbLoop()"
             @frame-back="mpv.frameBackStep()"
             @frame-forward="mpv.frameStep()"
+            @set-skip-seconds="(s) => mpv.skipSeconds.value = s"
           />
         </Transition>
 
@@ -356,12 +359,14 @@ onUnmounted(() => {
           :has-file="!!mpv.currentFile.value"
           :is-fullscreen="isFullscreen"
           :force-show-volume="volumeFlash"
+          :skip-seconds="mpv.skipSeconds.value"
           @toggle-play="mpv.togglePlay()"
           @seek="(s) => mpv.seekTo(s)"
           @set-volume="(v) => mpv.setVolume(v)"
           @toggle-mute="mpv.toggleMute()"
           @toggle-fullscreen="toggleFullscreen"
           @open-file="mpv.openFileDialog()"
+          @close-file="mpv.closeFile()"
           @toggle-settings="toggleSettings"
         />
       </div>

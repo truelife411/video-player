@@ -12,6 +12,7 @@ const props = defineProps<{
   isFullscreen: boolean;
   // 外部（如快捷键）要求短暂显示音量滑块：用递增计数器触发 watch
   forceShowVolume?: number;
+  skipSeconds?: number;
 }>();
 
 const emit = defineEmits<{
@@ -21,6 +22,7 @@ const emit = defineEmits<{
   toggleMute: [];
   toggleFullscreen: [];
   openFile: [];
+  closeFile: [];
   toggleSettings: [];
 }>();
 
@@ -90,18 +92,26 @@ const volumeIcon = computed(() => {
         <button
           class="icon-btn"
           :disabled="!hasFile"
-          title="后退 10 秒 (←)"
-          @click="emit('seek', Math.max(0, currentTime - 10))"
+          :title="`后退 ${skipSeconds || 10} 秒 (←)`"
+          @click="emit('seek', Math.max(0, currentTime - (skipSeconds || 10)))"
         >
           ⏪
         </button>
         <button
           class="icon-btn"
           :disabled="!hasFile"
-          title="前进 10 秒 (→)"
-          @click="emit('seek', Math.min(duration, currentTime + 10))"
+          :title="`前进 ${skipSeconds || 10} 秒 (→)`"
+          @click="emit('seek', Math.min(duration, currentTime + (skipSeconds || 10)))"
         >
           ⏩
+        </button>
+        <button
+          class="icon-btn close"
+          :disabled="!hasFile"
+          title="关闭当前视频"
+          @click="emit('closeFile')"
+        >
+          ✕
         </button>
       </div>
 
@@ -216,6 +226,10 @@ const volumeIcon = computed(() => {
 .icon-btn.play:hover:not(:disabled) {
   background: var(--color-accent-strong);
   box-shadow: 0 6px 18px rgba(78, 161, 255, 0.5);
+}
+
+.icon-btn.close:hover:not(:disabled) {
+  background: rgba(255, 80, 80, 0.2);
 }
 
 .play-icon {

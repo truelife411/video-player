@@ -164,6 +164,8 @@ export function useMpv() {
   async function openFile(path: string) {
     await command("loadfile", [path]);
     currentFile.value = path;
+    // mpv 默认加载后自动播放，主动同步状态
+    isPlaying.value = true;
     // 重置 AB 循环
     abLoopA.value = null;
     abLoopB.value = null;
@@ -176,7 +178,7 @@ export function useMpv() {
         if (starMatch) {
           const stars = Math.min(7, Math.max(1, starMatch[0].length));
           invoke("set_video_tag", { videoHash: h, typeId: 1, value: String(stars) })
-            .catch(() => {});
+            .catch((e) => console.error("[自动标注星级] 失败:", e));
         }
         try {
           const info = await invoke<{ play_position: number; duration: number } | null>(
@@ -400,14 +402,30 @@ export function useMpv() {
     saveProgress();
   });
 
+  // 快进/快退时间（秒），可通过设置面板修改
+  const skipSeconds = ref(10);
+
+  // 关闭当前文件
+  async function closeFile() {
+    await command("stop");
+    currentFile.value = "";
+    currentFileName.value = "";
+    videoHash.value = "";
+    isPlaying.value = false;
+    currentTime.value = 0;
+    duration.value = 0;
+    abLoopA.value = null;
+    abLoopB.value = null;
+  }
+
   return {
     // 状态
     isReady, isPlaying, currentTime, duration, volume, isMuted,
     currentFile, currentFileName, speed, videoHash,
     audioTracks, subTracks, currentAudioId, currentSubId,
-    aspectRatio, abLoopA, abLoopB,
+    aspectRatio, abLoopA, abLoopB, skipSeconds,
     // 文件
-    openFileDialog, openFile, loadSubtitle, loadSubtitleDialog, openDroppedFile,
+    openFileDialog, openFile, closeFile, loadSubtitle, loadSubtitleDialog, openDroppedFile,
     // 播放
     togglePlay, seekTo, seekBy, setVolume, toggleMute, setSpeed, saveProgress,
     // 轨道

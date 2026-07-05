@@ -9,6 +9,7 @@ defineProps<{
   currentSubId: number;
   abLoopA: number | null;
   abLoopB: number | null;
+  skipSeconds: number;
 }>();
 
 const emit = defineEmits<{
@@ -23,6 +24,7 @@ const emit = defineEmits<{
   clearAb: [];
   frameBack: [];
   frameForward: [];
+  setSkipSeconds: [s: number];
 }>();
 
 function trackLabel(t: Track, idx: number): string {
@@ -123,6 +125,22 @@ function trackLabel(t: Track, idx: number): string {
         <div class="ab-row">
           <button class="ab-btn" @click="emit('frameBack')">◀ 上一帧</button>
           <button class="ab-btn" @click="emit('frameForward')">下一帧 ▶</button>
+        </div>
+      </section>
+
+      <!-- 快进快退时间 -->
+      <section class="sec">
+        <div class="sec-title">快进/快退时间：{{ skipSeconds }} 秒</div>
+        <div class="ab-row">
+          <input
+            type="range"
+            min="1"
+            max="60"
+            step="1"
+            :value="skipSeconds"
+            @input="(e) => emit('setSkipSeconds', Number((e.target as HTMLInputElement).value))"
+            style="flex:1; cursor:pointer"
+          />
         </div>
       </section>
 
