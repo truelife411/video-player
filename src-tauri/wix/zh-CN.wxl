@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 简体中文 locale：code page 936 (GBK)，LCID 2052。
+     解决默认 en-US/1252 无法编码中文产品名「视频播放器」的问题 (LGHT0311)。 -->
+<WixLocalization Culture="zh-cn" Codepage="936" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="TauriLanguage">2052</String>
+  <String Id="TauriCodepage">936</String>
+  <String Id="LaunchApp">启动 视频播放器</String>
+  <String Id="DowngradeErrorMessage">已安装更高版本的 视频播放器。</String>
+  <String Id="PathEnvVarFeature">将 视频播放器 可执行文件的安装目录加入 PATH 环境变量，使其可在任意位置调用。</String>
+  <String Id="InstallAppFeature">安装 视频播放器。</String>
+</WixLocalization>

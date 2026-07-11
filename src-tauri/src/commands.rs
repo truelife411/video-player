@@ -369,3 +369,313 @@ pub fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), Str
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ============ 视频分辨率预解析（消除打开时的窗口跳变）============
+//
+// 目的：在 loadfile 之前就读出视频分辨率，让前端据此提前算好窗口尺寸，
+// 避免出现「默认 1280×720 → 跳到目标尺寸」的跳变。
+//
+// 只手写最常见的容器头解析（MP4 系 / MKV 系 / AVI），读前 ~1MB 即可。
+// 不支持的格式或解析失败统一返回 None，前端会回退到「隐藏窗口→等 mpv→显示」兜底。
+
+/// 读取文件前 N 字节到内存（够解析容器头即可）。
+fn read_head(path: &str, n: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut buf = Vec::with_capacity(n);
+    f.take(n as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+/// 大端读 u16/u32。
+fn be_u16(b: &[u8], o: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*b.get(o)?, *b.get(o + 1)?]))
+}
+fn be_u32(b: &[u8], o: usize) -> Option<u32> {
+    Some(u32::from_be_bytes([
+        *b.get(o)?,
+        *b.get(o + 1)?,
+        *b.get(o + 2)?,
+        *b.get(o + 3)?,
+    ]))
+}
+fn le_u32(b: &[u8], o: usize) -> Option<u32> {
+    Some(u32::from_le_bytes([
+        *b.get(o)?,
+        *b.get(o + 1)?,
+        *b.get(o + 2)?,
+        *b.get(o + 3)?,
+    ]))
+}
+
+/// MP4/M4V/MOV：递归查找 moov→trak→mdia→mdhd/stbl，定位 tkhd 里的 width/height（16.16 定点）。
+/// mp4 box 层级：moov → trak → mdia → minf → stbl → stsd（含编解码与尺寸），
+/// 但更稳的是读 trak 下的 tkhd（track header），它直接含 16.16 定点的宽高。
+fn probe_mp4(b: &[u8]) -> Option<(u32, u32)> {
+    // 递归遍历 box，在子树里找第一个类型为 tkhd 的 box
+    fn find_box<'a>(b: &'a [u8], target: &[u8; 4]) -> Option<usize> {
+        let mut o = 0usize;
+        while o + 8 <= b.len() {
+            let size = be_u32(b, o)? as usize;
+            let kind = [b[o + 4], b[o + 5], b[o + 6], b[o + 7]];
+            let header = 8usize;
+            // size==1 → 64 位 size；size==0 → 到文件尾
+            if size == 0 {
+                break;
+            }
+            let big_size = if size == 1 {
+                // 64 位 size 占随后 8 字节
+                if o + 16 > b.len() {
+                    break;
+                }
+                let hi = be_u32(b, o + 8)? as u64;
+                let lo = be_u32(b, o + 12)? as u64;
+                ((hi << 32) | lo) as usize
+            } else {
+                size
+            };
+            let body_start = if size == 1 { o + 16 } else { o + header };
+            let body_end = (o + big_size).min(b.len());
+
+            if kind == *target {
+                return Some(body_start);
+            }
+            // 容器类型：继续往下钻（只对已知容器递归，避免误入纯数据 box）
+            if matches!(
+                &kind,
+                b"moov" | b"trak" | b"mdia" | b"minf" | b"udta" | b"edts" | b"stbl"
+            ) {
+                if let Some(found) = find_box(&b[body_start..body_end], target) {
+                    return Some(body_start + found);
+                }
+            }
+            o += big_size.max(header);
+        }
+        None
+    }
+
+    // 注意：mdat 是巨大的纯数据块，必须跳过；上面递归只进容器 box，不会进 mdat。
+    let tkhd_off = find_box(b, b"tkhd")?;
+    // tkhd 结构：version(1) + flags(3) + ...
+    // version==0: creation(4)+mod(4)+trackID(4)+reserved(4)+dur(4)+reserved(8)+
+    //             layer(2)+altGroup(2)+vol(2)+reserved(2)+matrix(36)+width(4)+height(4)
+    // version==1: 时间字段是 8 字节
+    let ver = *b.get(tkhd_off)?;
+    let (w_off, h_off) = if ver == 1 {
+        // 1 + 3(flags) + 8 + 8 + 4 + 4 + 8 + 2 + 2 + 2 + 2 + 36 = 84 → width 在 84
+        (tkhd_off + 84, tkhd_off + 88)
+    } else {
+        // 1 + 3(flags) + 4 + 4 + 4 + 4 + 4 + 8 + 2 + 2 + 2 + 2 + 36 = 76 → width 在 76
+        (tkhd_off + 76, tkhd_off + 80)
+    };
+    // width/height 是 16.16 定点（高 16 位是整数部分）
+    let w = be_u32(b, w_off)? >> 16;
+    let h = be_u32(b, h_off)? >> 16;
+    if w > 0 && h > 0 {
+        Some((w, h))
+    } else {
+        None
+    }
+}
+
+/// MKV/WebM：EBML 解析。定位 Segment → Tracks → 找到带 PixelWidth/PixelHeight 的 Video 元素。
+fn probe_mkv(b: &[u8]) -> Option<(u32, u32)> {
+    // EBML element id 读法：首字节前导 1 的个数决定 id 长度
+    fn read_id(b: &[u8], o: usize) -> Option<(u32, usize)> {
+        let first = *b.get(o)?;
+        let len = if first & 0x80 != 0 {
+            1
+        } else if first & 0x40 != 0 {
+            2
+        } else if first & 0x20 != 0 {
+            3
+        } else if first & 0x10 != 0 {
+            4
+        } else {
+            return None;
+        };
+        if o + len > b.len() {
+            return None;
+        }
+        let mut id: u32 = 0;
+        for i in 0..len {
+            id = (id << 8) | b[o + i] as u32;
+        }
+        Some((id, len))
+    }
+
+    // EBML size：VINT（可变长度整数），首字节前导 0 个数决定长度
+    fn read_vint(b: &[u8], o: usize) -> Option<(u64, usize)> {
+        let first = *b.get(o)?;
+        if first == 0 {
+            return None; // 不允许全 0
+        }
+        let len = first.leading_zeros() as usize + 1;
+        if len > 8 || o + len > b.len() {
+            return None;
+        }
+        let mut val: u64 = (first & (0xFF >> len)) as u64;
+        for i in 1..len {
+            val = (val << 8) | b[o + i] as u64;
+        }
+        // size==全1（unknown/未知长度）→ 用剩余空间占位
+        let all_ones = len == 1 && first == 0xFF;
+        let _ = all_ones;
+        Some((val, len))
+    }
+
+    // 关心的 element id
+    // 0x18538067 = Segment, 0x1654AE6B = Tracks, 0xAE = TrackEntry,
+    // 0xE0 = Video, 0xB0 = PixelWidth(u16), 0xBA = PixelHeight(u16)
+    const ID_SEGMENT: u32 = 0x18538067;
+    const ID_TRACKS: u32 = 0x1654AE6B;
+    const ID_VIDEO: u32 = 0xE0;
+    const ID_PIXEL_WIDTH: u32 = 0xB0;
+    const ID_PIXEL_HEIGHT: u32 = 0xBA;
+
+    let mut o = 0usize;
+    while o < b.len() {
+        let (id, id_len) = match read_id(b, o) {
+            Some(v) => v,
+            None => break,
+        };
+        let size_off = o + id_len;
+        let (size, size_len) = match read_vint(b, size_off) {
+            Some(v) => v,
+            None => break,
+        };
+        let body = size_off + size_len;
+        let next = if size == 0 || size as usize > b.len() {
+            b.len()
+        } else {
+            body + size as usize
+        };
+
+        if id == ID_SEGMENT {
+            // 在 Segment 内找 Tracks
+            let tracks_body = {
+                let seg = &b[body..next.min(b.len())];
+                let mut so = 0usize;
+                let mut found: Option<(usize, usize)> = None;
+                while so < seg.len() {
+                    let (sid, sl) = match read_id(seg, so) {
+                        Some(v) => v,
+                        None => break,
+                    };
+                    let (ss, ssl) = match read_vint(seg, so + sl) {
+                        Some(v) => v,
+                        None => break,
+                    };
+                    let sb = so + sl + ssl;
+                    let sn = if ss == 0 || sb + ss as usize > seg.len() {
+                        seg.len()
+                    } else {
+                        sb + ss as usize
+                    };
+                    if sid == ID_TRACKS {
+                        found = Some((sb, sn));
+                        break;
+                    }
+                    so = sn;
+                }
+                found
+            };
+            if let Some((ts, te)) = tracks_body {
+                let tracks = &b[body + ts..body + te.min(b.len())];
+                // 在 Tracks 里逐层找 Video 元素（TrackEntry→Video），取 PixelWidth/Height
+                let mut pw: Option<u32> = None;
+                let mut ph: Option<u32> = None;
+                let mut to = 0usize;
+                let mut in_video = false;
+                while to < tracks.len() {
+                    let (eid, el) = match read_id(tracks, to) {
+                        Some(v) => v,
+                        None => break,
+                    };
+                    let (es, esl) = match read_vint(tracks, to + el) {
+                        Some(v) => v,
+                        None => break,
+                    };
+                    let eb = to + el + esl;
+                    let en = if es == 0 || eb + es as usize > tracks.len() {
+                        tracks.len()
+                    } else {
+                        eb + es as usize
+                    };
+                    match eid {
+                        ID_VIDEO => in_video = true,
+                        _ if eid == ID_PIXEL_WIDTH && in_video => {
+                            if let Some(v) = be_u16(tracks, eb) {
+                                pw = Some(v as u32);
+                            }
+                        }
+                        _ if eid == ID_PIXEL_HEIGHT && in_video => {
+                            if let Some(v) = be_u16(tracks, eb) {
+                                ph = Some(v as u32);
+                            }
+                        }
+                        _ => {}
+                    }
+                    if pw.is_some() && ph.is_some() {
+                        break;
+                    }
+                    to = en;
+                }
+                if let (Some(w), Some(h)) = (pw, ph) {
+                    if w > 0 && h > 0 {
+                        return Some((w, h));
+                    }
+                }
+            }
+        }
+        o = next;
+    }
+    None
+}
+
+/// AVI：RIFF 容器。'RIFF' size 'AVI ' → 'hdrl' → 'avih'（主文件头）。
+/// avih 偏移 32 字节处是 dwWidth（u32 LE），36 字节处是 dwHeight。
+fn probe_avi(b: &[u8]) -> Option<(u32, u32)> {
+    // 找 'avih' 标记
+    let needle = b"avih";
+    let pos = (0..b.len().saturating_sub(56)).find(|&i| &b[i..i + 4] == needle)?;
+    // avih 后是 size(4) 再是内容；内容偏移 32/36 是宽高（LE u32）
+    let content = pos + 4 + 4;
+    let w = le_u32(b, content + 32)?;
+    let h = le_u32(b, content + 36)?;
+    if w > 0 && h > 0 && w < 100_000 && h < 100_000 {
+        Some((w, h))
+    } else {
+        None
+    }
+}
+
+/// 预解析视频分辨率（纯函数，无 AppHandle，可供 setup 阶段直接调用）。
+/// 返回 None 表示无法解析（前端回退到兜底路径）。
+pub fn probe_resolution(path: &str) -> Option<(u32, u32)> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    // 读前 1MB 足够覆盖这些容器的头部（moov/tracks/avih 一般在文件前部）。
+    // 注意：少数 mp4 的 moov 在文件尾部（流式优化），这种 probe 会失败 → 兜底。
+    const HEAD: usize = 1_000_000;
+    let b = read_head(path, HEAD).ok()?;
+
+    match ext.as_str() {
+        "mp4" | "m4v" | "mov" => probe_mp4(&b),
+        "mkv" | "webm" => probe_mkv(&b),
+        "avi" => probe_avi(&b),
+        _ => None,
+    }
+}
+
+/// 预解析视频分辨率（命令包装）。返回 None 表示无法解析（前端回退到兜底路径）。
+#[tauri::command]
+pub fn probe_video_resolution(path: String) -> Result<Option<(u32, u32)>, String> {
+    Ok(probe_resolution(&path))
+}

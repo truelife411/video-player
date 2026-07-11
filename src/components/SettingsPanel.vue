@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import type { TagType } from "../composables/useTags";
 
 defineProps<{
@@ -39,6 +40,43 @@ function submitCreateTag() {
   newTagName.value = "";
   newTagOptions.value = "";
 }
+
+// —— Windows 文件关联（设置为默认视频播放器）——
+// isRegistered 仅反映注册表里 ProgID/扩展名映射是否存在；
+// Windows 不允许应用静默改写真正的"默认程序"（UserChoice），
+// 所以注册后应用会出现在"打开方式"列表，首次仍需用户手动选一次"始终使用"。
+const fileAssocOn = ref(false);
+const fileAssocBusy = ref(false);
+
+async function loadFileAssoc() {
+  try {
+    fileAssocOn.value = await invoke<boolean>("is_file_assoc_registered");
+  } catch {
+    fileAssocOn.value = false;
+  }
+}
+
+async function toggleFileAssoc() {
+  if (fileAssocBusy.value) return;
+  fileAssocBusy.value = true;
+  try {
+    if (fileAssocOn.value) {
+      await invoke("unregister_file_assoc");
+      fileAssocOn.value = false;
+    } else {
+      await invoke("register_file_assoc");
+      fileAssocOn.value = true;
+    }
+  } catch (e) {
+    console.error("[文件关联] 切换失败:", e);
+    // 失败时回读真实状态，保证开关与注册表一致
+    await loadFileAssoc();
+  } finally {
+    fileAssocBusy.value = false;
+  }
+}
+
+onMounted(loadFileAssoc);
 
 // 删除确认：用自定义模态替代 window.confirm（Tauri WebView2 不支持原生 dialog）
 const pendingDelete = ref<TagType | null>(null);
@@ -119,6 +157,30 @@ function cancelDeleteTag() {
             从上次位置
           </button>
         </div>
+      </section>
+
+      <!-- 系统集成 -->
+      <section class="sec">
+        <div class="sec-title">设为默认视频播放器</div>
+        <label class="switch-row">
+          <span class="switch-text">
+            关联视频文件格式
+            <span class="switch-sub">mkv / mp4 / avi / mov / webm 等</span>
+          </span>
+          <button
+            class="toggle-switch"
+            role="switch"
+            :aria-checked="fileAssocOn"
+            :disabled="fileAssocBusy"
+            :class="{ on: fileAssocOn }"
+            @click="toggleFileAssoc"
+          >
+            <span class="knob"></span>
+          </button>
+        </label>
+        <p class="empty" style="padding-top:6px">
+          开启后，本应用将出现在 Windows「打开方式」列表中。首次使用需在右键菜单选「始终使用此应用」确认。
+        </p>
       </section>
 
       <!-- 标签管理 -->
@@ -400,6 +462,59 @@ function cancelDeleteTag() {
 .type-toggle button.active {
   background: rgba(78, 161, 255, 0.25);
   color: #fff;
+}
+
+/* 开关行：设为默认播放器 */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+}
+.switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.switch-sub {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* iOS 风格拨动开关 */
+.toggle-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+  padding: 0;
+}
+.toggle-switch.on {
+  background: #4ea1ff;
+}
+.toggle-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.toggle-switch .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.toggle-switch.on .knob {
+  transform: translateX(16px);
 }
 
 .submit-btn {

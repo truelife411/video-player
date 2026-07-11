@@ -266,6 +266,8 @@ export function useMpv() {
   // —— 文件操作 ——
   // 当前视频的 hash（用于记忆进度 / 标签）
   const videoHash = ref<string>("");
+  // 是否正在打开视频（供前端显示加载提示，并掩盖窗口尺寸调整过程）
+  const isOpening = ref(false);
 
   async function openFile(path: string) {
     // 先重置上一个视频残留的状态，避免新视频短暂显示旧的进度/轨道/分辨率
@@ -285,17 +287,58 @@ export function useMpv() {
     vFlipped.value = false;
 
     // 关键：以暂停态加载新视频，避免先以"原尺寸/上一视频尺寸"播放一小会。
-    // 流程：loadfile(暂停) → 等待分辨率 → 调整窗口 → 取消暂停开始播放。
-    await setProperty("pause", true);
-    await command("loadfile", [path]);
-    currentFile.value = path;
+    isOpening.value = true;
+    const appWindow = getCurrentWindow();
+    try {
+      await setProperty("pause", true);
+      await command("loadfile", [path]);
+      currentFile.value = path;
 
-    // 等待 mpv 解析出真实分辨率，并据此调整窗口大小（这一步完成前视频保持暂停）
-    const dim = await waitForVideoResolution();
-    if (dim) {
-      videoWidth.value = dim.w;
-      videoHeight.value = dim.h;
-      await resizeWindowForVideo(dim.w, dim.h);
+      // 消除窗口跳变的「两层」策略：
+      //   第 1 层（主）：Rust 预解析容器头（probe_video_resolution），loadfile 之后
+      //                 拿到分辨率就立刻 resize，窗口直接是目标尺寸，无跳变。
+      //   第 2 层（兜底）：预解析失败时（不支持的格式 / moov 在文件尾部 / 损坏），
+      //                 隐藏窗口 → 等 mpv 解析出分辨率 → resize → 显示，用加载提示掩盖。
+      let probed: { w: number; h: number } | null = null;
+      try {
+        const r = await invoke<[number, number] | null>("probe_video_resolution", { path });
+        if (r && r[0] > 0 && r[1] > 0) probed = { w: r[0], h: r[1] };
+      } catch (e) {
+        console.warn("[预解析分辨率] 失败，回退兜底:", e);
+      }
+
+      if (probed) {
+        // 主路径：已拿到分辨率，直接 resize（loadfile 并行进行），一步到位
+        videoWidth.value = probed.w;
+        videoHeight.value = probed.h;
+        await resizeWindowForVideo(probed.w, probed.h);
+      } else {
+        // 兜底路径：隐藏窗口，等 mpv 解析分辨率后再显示（避免跳变）
+        try {
+          await appWindow.hide();
+        } catch {
+          /* 忽略 */
+        }
+        const dim = await waitForVideoResolution();
+        if (dim) {
+          videoWidth.value = dim.w;
+          videoHeight.value = dim.h;
+          await resizeWindowForVideo(dim.w, dim.h);
+        }
+      }
+    } catch (e) {
+      // loadfile / resize 等任何步骤抛错都不能让窗口永久隐藏
+      console.error("[openFile] 失败:", e);
+    } finally {
+      // 兜底路径隐藏过窗口：确保恢复显示（即使超时拿不到分辨率也不卡黑屏）。
+      // show 对已可见窗口是 no-op，主路径/异常路径都会安全跳过。
+      try {
+        await appWindow.show();
+        await appWindow.setFocus();
+      } catch {
+        /* 忽略 */
+      }
+      isOpening.value = false;
     }
 
     // 窗口已就位，开始播放
@@ -696,7 +739,7 @@ export function useMpv() {
   return {
     // 状态
     isReady, isPlaying, currentTime, duration, volume, isMuted,
-    currentFile, currentFileName, speed, videoHash,
+    currentFile, currentFileName, speed, videoHash, isOpening,
     audioTracks, subTracks, currentAudioId, currentSubId,
     aspectRatio, abLoopA, abLoopB, skipSeconds, windowScale, resumeMode,
     videoWidth, videoHeight, videoRotate, hFlipped, vFlipped,

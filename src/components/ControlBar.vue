@@ -81,7 +81,14 @@ const volumeIcon = computed(() => {
     <div class="buttons">
       <!-- 左侧 -->
       <div class="group">
-        <button class="icon-btn" title="打开文件" @click="emit('openFile')">📁</button>
+        <!-- 打开文件：方框 + 蓝底 + 白色文件夹 -->
+        <button
+          class="icon-btn ctl"
+          title="打开文件"
+          @click="emit('openFile')"
+        >
+          <span class="ctl-inner"><i class="icon-folder"></i></span>
+        </button>
 
         <!-- 播放/暂停：圆形 + 蓝底 + 白色三角/竖条 -->
         <button
@@ -317,6 +324,34 @@ const volumeIcon = computed(() => {
   height: 9px;
   background: #fff;
   border-radius: 1px;
+}
+
+/* 打开文件：白色文件夹 */
+.icon-folder {
+  width: 12px;
+  height: 10px;
+  position: relative;
+}
+.icon-folder::before {
+  /* 文件夹主体（含底部、左右、上沿后部） */
+  content: "";
+  position: absolute;
+  inset: 2px 0 0 0;
+  border: 2px solid #fff;
+  border-top: none;
+  border-radius: 0 2px 2px 2px;
+}
+.icon-folder::after {
+  /* 文件夹顶板（凸起的 tab，覆盖在主体上方） */
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 5px;
+  height: 3px;
+  border: 2px solid #fff;
+  border-bottom: none;
+  border-radius: 2px 2px 0 0;
 }
 
 /* —— 面板触发按钮（标签/播放操作/设置）：透明外圈 + 线条图标，统一风格 —— */

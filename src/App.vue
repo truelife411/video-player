@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useMpv } from "./composables/useMpv";
 import { useTags } from "./composables/useTags";
@@ -86,6 +87,33 @@ async function toggleTagCard() {
     showToast("无法加载标签");
   } finally {
     tagCardLoading.value = false;
+  }
+}
+
+// —— 启动/双击文件打开（文件关联的「最后一公里」）——
+// 后端两条路径：① 首启从 argv 取（get_startup_file，取出即失效）；
+// ② 已运行实例由 single-instance 插件 emit「open-file-argv」转发。
+// 两路都要等 mpv 初始化完成（isReady）才能 openFile，否则 load 会失败。
+async function openFileWhenReady(path: string) {
+  if (!path) return;
+  // 轮询等待 isReady（比 watch 稳：避免 watch 错过值变化导致永久不触发）。
+  // 最多等 15 秒（mpv 初始化偶尔较慢），超时则放弃但仍尝试 openFile（best-effort）。
+  const deadline = Date.now() + 15000;
+  while (!mpv.isReady.value && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  try {
+    await mpv.openFile(path);
+  } catch (e) {
+    console.error("[openFileWhenReady] 失败:", e);
+    // openFile 失败也要把窗口显示出来，避免只剩声音没有界面
+    try {
+      const w = getCurrentWindow();
+      await w.show();
+      await w.setFocus();
+    } catch {
+      /* 忽略 */
+    }
   }
 }
 
@@ -182,6 +210,8 @@ function onSurfaceDblClick() {
 
 // —— 拖拽文件（Tauri 2 webview 拖拽事件，非浏览器 drop）——
 let unlistenDrag: UnlistenFn | null = null;
+// single-instance 转发的「双击文件打开」事件
+let unlistenOpenFileArgv: UnlistenFn | null = null;
 
 // —— 音量反馈：键盘调音量时短暂弹出滑块 ——
 const volumeFlash = ref(0);
@@ -313,6 +343,34 @@ onMounted(async () => {
       }
     }
   });
+
+  // 首启：取出 argv 里的视频路径（双击文件且无已运行实例时走这里）
+  let hadStartup = false;
+  try {
+    const startup = await invoke<string | null>("get_startup_file");
+    if (startup) {
+      hadStartup = true;
+      await openFileWhenReady(startup);
+    }
+  } catch (e) {
+    console.warn("[启动文件] 读取失败:", e);
+  }
+
+  // 无启动视频时直接显示窗口（openFile 内部也会 show，这里兜底纯启动场景）。
+  // 有启动视频时由 openFile 的 resize 流程负责 show，避免提前露出默认尺寸。
+  if (!hadStartup) {
+    try {
+      await appWindow.show();
+      await appWindow.setFocus();
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  // 已运行实例：single-instance 插件转发新双击的文件
+  unlistenOpenFileArgv = await listen<string>("open-file-argv", (event) => {
+    if (event.payload) openFileWhenReady(event.payload);
+  });
 });
 
 onUnmounted(() => {
@@ -322,6 +380,7 @@ onUnmounted(() => {
   if (clickTimer) clearTimeout(clickTimer);
   unlistenFullscreen?.();
   unlistenDrag?.();
+  unlistenOpenFileArgv?.();
 });
 </script>
 
@@ -363,6 +422,14 @@ onUnmounted(() => {
       <div v-if="mpv.isReady.value && !mpv.currentFile.value" class="empty-hint" @click.stop>
         <div class="empty-icon">🎬</div>
         <p>拖拽视频文件到此处，或点击下方"打开文件"</p>
+      </div>
+    </Transition>
+
+    <!-- 打开视频中：掩盖窗口尺寸调整（兜底路径隐藏窗口时，显示前不会看到此层） -->
+    <Transition name="fade">
+      <div v-if="mpv.isOpening.value" class="opening-hint" @click.stop>
+        <div class="spinner"></div>
+        <p>正在打开…</p>
       </div>
     </Transition>
 
@@ -562,6 +629,36 @@ onUnmounted(() => {
 .empty-icon {
   font-size: 56px;
   opacity: 0.6;
+}
+
+/* 打开视频中的加载提示（掩盖窗口调整） */
+.opening-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.opening-hint p {
+  font-size: 14px;
+}
+.spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #4ea1ff;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .empty-hint p {
