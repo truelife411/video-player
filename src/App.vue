@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke } from "@tauri-apps/api/core";
@@ -24,19 +24,28 @@ const showPlayback = ref(false);
 const showTagCard = ref(false);
 const showSearch = ref(false);
 
-// 任何浮层打开时，禁用 surface 的点击（防止穿透到视频）
+// 底部浮层（设置/播放/搜索）打开时，禁用 surface 的点击（防止穿透到视频）。
+// 注意：标签卡片（右上角）不算在内——它不遮挡画面，画面右键仍能 toggle 关闭它。
 const anyOverlayOpen = computed(
-  () => showSettings.value || showPlayback.value || showTagCard.value || showSearch.value
+  () => showSettings.value || showPlayback.value || showSearch.value
 );
-// 互斥：打开一个底部浮层时关闭另一个，避免重叠
-function closeBottomPanels() {
-  showSettings.value = false;
-  showPlayback.value = false;
+
+// 卡片统一互斥：同一时间只显示一个卡片。
+// 打开指定卡片时关闭其他三个（设置/播放/标签/搜索）。
+// 传 null 表示全部关闭。
+function closeAllPanelsExcept(which: "settings" | "playback" | "tag" | "search" | null) {
+  if (which !== "settings") showSettings.value = false;
+  if (which !== "playback") showPlayback.value = false;
+  if (which !== "tag") showTagCard.value = false;
+  if (which !== "search") {
+    showSearch.value = false;
+    if (which !== null) search.clear();
+  }
 }
 
 function toggleSettings() {
   const willOpen = !showSettings.value;
-  closeBottomPanels();
+  closeAllPanelsExcept(willOpen ? "settings" : null);
   if (willOpen) {
     // 首次打开设置时加载标签类型，并确保预设标签存在（修复误删）
     if (tags.tagTypes.value.length === 0) tags.loadTagTypes();
@@ -51,23 +60,33 @@ function toggleSettings() {
 function togglePlayback() {
   if (!mpv.currentFile.value) return;
   const willOpen = !showPlayback.value;
-  closeBottomPanels();
+  closeAllPanelsExcept(willOpen ? "playback" : null);
   showPlayback.value = willOpen;
 }
 
 // —— 标签卡片（T 键或右键唤出）——
 const videoHash = ref<string>("");
 const tagCardLoading = ref(false);
+// 防抖：右键有时会被 WebView2 双触发，导致「关→瞬间又开」。
+// 在此时间窗口（ms）内的重复调用直接忽略。
+let lastToggleTagAt = 0;
+const TOGGLE_TAG_DEBOUNCE = 350;
 async function toggleTagCard() {
   if (!mpv.currentFile.value) {
     showToast("请先打开视频");
     return;
   }
+  // 防抖：短时间内重复调用忽略（修复右键双触发导致的开→关→开闪烁）
+  const now = Date.now();
+  if (now - lastToggleTagAt < TOGGLE_TAG_DEBOUNCE) return;
+  lastToggleTagAt = now;
   if (tagCardLoading.value) return;
   if (showTagCard.value) {
     showTagCard.value = false;
     return;
   }
+  // 互斥：打开标签卡片前关闭其他卡片（设置/播放/搜索）
+  closeAllPanelsExcept("tag");
   tagCardLoading.value = true;
   try {
     // 复用 openFile 时已算的 hash，避免重复计算（大文件 hash 是主要耗时）
@@ -126,10 +145,11 @@ function showToast(msg: string) {
   toastTimer = window.setTimeout(() => (toastMsg.value = ""), 2500);
 }
 
-// —— 搜索浮层（Ctrl+F）——
+// —— 搜索浮层（Ctrl+F 或工具栏按钮）——
 function toggleSearch() {
-  showSearch.value = !showSearch.value;
-  if (!showSearch.value) search.clear();
+  const willOpen = !showSearch.value;
+  closeAllPanelsExcept(willOpen ? "search" : null);
+  showSearch.value = willOpen;
 }
 async function searchPlay(path: string) {
   await mpv.openFile(path);
@@ -187,12 +207,63 @@ function onMouseMove() {
   showControls();
 }
 
-// —— 单击/双击画面处理 ——
-// 单击=播放/暂停，双击=全屏。用延时区分，避免单击触发后双击又触发。
+// —— 单击/双击/拖拽画面处理 ——
+// 单击（按下后原地释放、无拖动）= 播放/暂停；双击 = 全屏；
+// 按下并拖动超过阈值 = 拖动窗口（Tauri 原生 startDragging）。
+//
+// 关键：只在【视频画面区域】生效，控制栏/浮层/按钮不受影响。
+// 通过 mousedown 的 target 判断——只有事件源是 surface 本身（非冒泡自子元素）
+// 才启动拖动判定，这样按钮区域的 mousedown 不会触发拖动，按钮正常工作。
 let clickTimer: number | null = null;
-function onSurfaceClick() {
-  if (anyOverlayOpen.value) return; // 浮层打开时忽略画面点击
-  if (clickTimer) return;
+// 拖拽判定：移动超过此像素阈值即认定为拖动（小阈值=灵敏，4px 防手抖）
+const DRAG_THRESHOLD = 4;
+// mousedown 起点（仅当 target 是 surface 本身时记录，用于判定拖动 vs 单击）
+let mouseDownPos: { x: number; y: number } | null = null;
+let dragging = false;
+
+function onSurfaceMouseDown(e: MouseEvent) {
+  // 只处理左键，且只在事件源是 surface 本身时启用拖动判定。
+  // target === currentTarget 表示点击的不是子元素（按钮/浮层等），避免按钮失效。
+  if (e.button !== 0 || e.target !== e.currentTarget) return;
+  mouseDownPos = { x: e.clientX, y: e.clientY };
+  dragging = false;
+}
+
+function onSurfaceMouseMove(e: MouseEvent) {
+  if (!mouseDownPos || dragging) return;
+  const dx = e.clientX - mouseDownPos.x;
+  const dy = e.clientY - mouseDownPos.y;
+  if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
+    // 超过阈值：判定为拖动，取消待触发的单击
+    dragging = true;
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+    }
+    mouseDownPos = null;
+    // 调用 Tauri 原生窗口拖动；用户松开鼠标后系统自动结束拖动
+    appWindow.startDragging().catch((err) =>
+      console.warn("[拖动窗口] 失败:", err)
+    );
+  }
+}
+
+function onSurfaceMouseUp(e: MouseEvent) {
+  if (e.button !== 0) return;
+  // 已进入拖动（startDragging 接管）或未记录起点：忽略
+  if (!mouseDownPos) {
+    dragging = false;
+    return;
+  }
+  // 鼠标按下并原地释放（未拖动）= 单击
+  mouseDownPos = null;
+  if (anyOverlayOpen.value) return;
+  if (clickTimer) {
+    // 已有一次待触发单击：这是第二次释放 = 双击即将由 dblclick 处理，取消单击
+    clearTimeout(clickTimer);
+    clickTimer = null;
+    return;
+  }
   clickTimer = window.setTimeout(() => {
     clickTimer = null;
     mpv.togglePlay();
@@ -201,10 +272,13 @@ function onSurfaceClick() {
 }
 
 function onSurfaceDblClick() {
+  // 双击 = 全屏。取消任何待触发的单击，并清理拖动状态
   if (clickTimer) {
     clearTimeout(clickTimer);
     clickTimer = null;
   }
+  mouseDownPos = null;
+  dragging = false;
   toggleFullscreen();
 }
 
@@ -320,6 +394,20 @@ const displayName = computed(() => {
   return "";
 });
 
+// 打开新视频时关闭所有浮层/卡片，恢复原状（覆盖所有 openFile 调用路径）。
+// currentFile 在 openFile 开头被设置，监听它的变化即可捕获"打开视频"动作。
+watch(
+  () => mpv.currentFile.value,
+  (file) => {
+    if (file) {
+      showSettings.value = false;
+      showPlayback.value = false;
+      showTagCard.value = false;
+      showSearch.value = false;
+    }
+  }
+);
+
 onMounted(async () => {
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("mousemove", onMouseMove);
@@ -385,14 +473,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 视频表面：透明，单击=播放/暂停，双击=全屏，右键=标签卡片 -->
+  <!-- 视频表面：透明，单击=播放/暂停，双击=全屏，按下拖动=移动窗口，右键=标签卡片。
+       拖动判定仅当 target 是 surface 本身时生效，控制栏/浮层/按钮不受影响。 -->
   <div
     class="surface"
     :class="{
       'cursor-hidden': !controlsVisible && mpv.isPlaying.value,
       'overlay-open': anyOverlayOpen,
     }"
-    @click="onSurfaceClick"
+    @mousedown="onSurfaceMouseDown"
+    @mousemove="onSurfaceMouseMove"
+    @mouseup="onSurfaceMouseUp"
     @dblclick="onSurfaceDblClick"
     @contextmenu.prevent="toggleTagCard"
   >
@@ -508,6 +599,7 @@ onUnmounted(() => {
           @toggle-settings="toggleSettings"
           @toggle-playback="togglePlayback"
           @toggle-tag-card="toggleTagCard"
+          @toggle-search="toggleSearch"
           @rotate-cw="mpv.rotate90()"
           @rotate-ccw="mpv.rotateMinus90()"
         />
@@ -519,15 +611,18 @@ onUnmounted(() => {
       <div v-if="toastMsg" class="toast" @click.stop>{{ toastMsg }}</div>
     </Transition>
 
-    <!-- 搜索浮层（Ctrl+F） -->
+    <!-- 搜索浮层（Ctrl+F 或工具栏按钮） -->
     <Transition name="fade">
       <SearchOverlay
         v-if="showSearch"
+        class="search-pos"
         :keyword="search.keyword.value"
+        :selected-stars="search.selectedStars.value"
         :results="search.results.value"
         :searching="search.searching.value"
         @close="showSearch = false"
         @updatekeyword="(k: string) => search.setKeyword(k)"
+        @select-stars="(n: number) => search.setStars(n)"
         @play="(p: string) => searchPlay(p)"
         @reveal="(p: string) => searchReveal(p)"
       />
@@ -552,7 +647,7 @@ onUnmounted(() => {
 .surface.overlay-open {
   pointer-events: none;
 }
-.surface.overlay-open :where(.tagcard-pos, .bottom-wrap, .overlay-top) {
+.surface.overlay-open :where(.tagcard-pos, .bottom-wrap, .overlay-top, .search-pos) {
   pointer-events: auto;
 }
 

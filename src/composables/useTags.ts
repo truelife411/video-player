@@ -27,6 +27,8 @@ export interface VideoInfo {
   modified_at: number;
   play_position: number;
   duration: number;
+  stars: number;   // 星级 0-7（0=未标注）
+  quality: string; // 画质（如 1080p/4K），空串=未标注
 }
 
 /**

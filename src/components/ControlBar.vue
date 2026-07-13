@@ -26,6 +26,7 @@ const emit = defineEmits<{
   toggleSettings: [];
   togglePlayback: [];
   toggleTagCard: [];
+  toggleSearch: [];
   rotateCw: [];
   rotateCcw: [];
 }>();
@@ -136,6 +137,15 @@ const volumeIcon = computed(() => {
 
       <!-- 右侧 -->
       <div class="group">
+        <!-- 搜索（放大镜，与标签按钮风格一致） -->
+        <button
+          class="icon-btn glyph"
+          title="搜索 (Ctrl+F)"
+          @click="emit('toggleSearch')"
+        >
+          <svg viewBox="0 0 24 24" class="g"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        </button>
+
         <!-- 标签 -->
         <button
           class="icon-btn glyph"

@@ -281,10 +281,16 @@ export function useMpv() {
     videoHeight.value = 0;
     abLoopA.value = null;
     abLoopB.value = null;
-    // 重置画面变换（仅同步前端状态，mpv 侧由 loadfile 自动重置）
+    // 重置画面变换 + 播放速度：loadfile 未必重置所有项，需显式重置 mpv 侧
+    // （设置不记忆，每次打开都复原：旋转/翻转/速度全部归零）。
     videoRotate.value = 0;
     hFlipped.value = false;
     vFlipped.value = false;
+    speed.value = 1;
+    await setProperty("video-rotate", 0).catch(() => {});
+    await setProperty("vf", "").catch(() => {});
+    await setProperty("hwdec", "auto-safe").catch(() => {});
+    await setProperty("speed", 1).catch(() => {});
 
     // 关键：以暂停态加载新视频，避免先以"原尺寸/上一视频尺寸"播放一小会。
     isOpening.value = true;
@@ -293,6 +299,11 @@ export function useMpv() {
       await setProperty("pause", true);
       await command("loadfile", [path]);
       currentFile.value = path;
+
+      // loadfile 之后再次重置旋转：loadfile 会把 video-rotate 设回文件元数据值，
+      // 必须在 loadfile 完成后重置才能确保新视频从 0° 开始（旋转不记忆）。
+      await command("set", ["video-rotate", "0"]).catch(() => {});
+      videoRotate.value = 0;
 
       // 消除窗口跳变的「两层」策略：
       //   第 1 层（主）：Rust 预解析容器头（probe_video_resolution），loadfile 之后
@@ -579,15 +590,41 @@ export function useMpv() {
     aspectRatio.value = r;
   }
 
-  // 翻转/旋转。video-rotate 是 mpv 的可写属性，但部分封装对其用 setProperty 不生效，
-  // 改用 command("set", [...]) 更可靠。
+  // 翻转/旋转。
+  //
+  // 旋转用 video-rotate 属性（渲染层操作，硬解下也有效）。
+  // 翻转用 vf 滤镜——但硬解(hwdec)下软件滤镜会被静默忽略（硬解画面留在 GPU，
+  // 软件滤镜碰不到）。mpv 在 gpu-next 下不会为此自动回退软解。
+  //
+  // 解决：翻转时临时关闭硬解（hwdec=no），让 vf 滤镜生效；关闭翻转时恢复硬解。
+  // 代价：翻转期间 CPU 占用升高（软解），但能保证翻转真正生效。
+  // 关闭硬解后 mpv 会自动用软解，vf 滤镜随之生效。
+  async function applyVfFilters() {
+    const chain: string[] = [];
+    if (hFlipped.value) chain.push("hflip");
+    if (vFlipped.value) chain.push("vflip");
+    const hasFlip = chain.length > 0;
+    try {
+      if (hasFlip) {
+        // 翻转需要软解：先关硬解，再设滤镜
+        await setProperty("hwdec", "no");
+        await setProperty("vf", chain.join(","));
+      } else {
+        // 无翻转：清滤镜，恢复硬解
+        await setProperty("vf", "");
+        await setProperty("hwdec", "auto-safe");
+      }
+    } catch (e) {
+      console.warn("[vf] 设置失败:", e);
+    }
+  }
   async function toggleHFlip() {
-    await command("vf", ["toggle", "hflip"]);
     hFlipped.value = !hFlipped.value;
+    await applyVfFilters();
   }
   async function toggleVFlip() {
-    await command("vf", ["toggle", "vflip"]);
     vFlipped.value = !vFlipped.value;
+    await applyVfFilters();
   }
   // 顺时针旋转 90°（0→90→180→270→0 循环）
   async function rotate90() {
@@ -620,13 +657,12 @@ export function useMpv() {
       }
       videoRotate.value = 0;
     }
-    if (hFlipped.value) {
-      await command("vf", ["toggle", "hflip"]);
+    if (hFlipped.value || vFlipped.value) {
       hFlipped.value = false;
-    }
-    if (vFlipped.value) {
-      await command("vf", ["toggle", "vflip"]);
       vFlipped.value = false;
+      // 清空滤镜并恢复硬解
+      await setProperty("vf", "").catch(() => {});
+      await setProperty("hwdec", "auto-safe").catch(() => {});
     }
   }
 

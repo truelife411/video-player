@@ -95,6 +95,7 @@ pub fn run() {
             commands::list_video_tags,
             commands::set_video_tag,
             commands::search_videos,
+            commands::list_videos_by_stars,
             commands::reveal_in_explorer,
             commands::get_setting,
             commands::set_setting,

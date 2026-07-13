@@ -17,6 +17,8 @@ pub struct VideoInfo {
     pub modified_at: i64,
     pub play_position: f64,
     pub duration: f64,
+    pub stars: i64,     // 星级 0-7（0=未标注），来自 video_tags 的「星级」类型
+    pub quality: String, // 画质（如 1080p/4K），来自 video_tags 的「画质」类型
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -91,7 +93,16 @@ pub fn register_video(app: AppHandle, path: String) -> Result<String, String> {
 pub fn get_video(app: AppHandle, hash: String) -> Result<Option<VideoInfo>, String> {
     let conn = db::open(&app).map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT hash, file_name, file_path, extension, size_bytes, modified_at, play_position, duration FROM videos WHERE hash=?1")
+        .prepare(
+            "SELECT v.hash, v.file_name, v.file_path, v.extension, v.size_bytes, v.modified_at, v.play_position, v.duration,
+                    (SELECT CAST(vt.value_text AS INTEGER) FROM video_tags vt
+                     JOIN tag_types tt ON tt.id = vt.type_id
+                     WHERE vt.video_hash = v.hash AND tt.name = '星级') AS stars,
+                    COALESCE((SELECT vt.value_text FROM video_tags vt
+                     JOIN tag_types tt ON tt.id = vt.type_id
+                     WHERE vt.video_hash = v.hash AND tt.name = '画质'), '') AS quality
+             FROM videos v WHERE v.hash=?1",
+        )
         .map_err(|e| e.to_string())?;
     let v = stmt
         .query_row(params![hash], |r| {
@@ -104,6 +115,8 @@ pub fn get_video(app: AppHandle, hash: String) -> Result<Option<VideoInfo>, Stri
                 modified_at: r.get(5)?,
                 play_position: r.get(6)?,
                 duration: r.get(7).unwrap_or(0.0),
+                stars: r.get::<_, Option<i64>>(8).ok().flatten().unwrap_or(0),
+                quality: r.get::<_, Option<String>>(9).ok().flatten().unwrap_or_default(),
             })
         })
         .ok();
@@ -296,14 +309,21 @@ pub fn set_video_tag(
 
 // ============ 搜索 命令 ============
 
-/// 按关键词搜索：匹配 file_name 或任何标签值
+/// 按关键词搜索：匹配 file_name 或任何标签值。
+/// 同时带出星级、画质（通过子查询从 video_tags 取）。
 #[tauri::command]
 pub fn search_videos(app: AppHandle, keyword: String) -> Result<Vec<VideoInfo>, String> {
     let conn = db::open(&app).map_err(|e| e.to_string())?;
     let like = format!("%{}%", keyword.trim());
     let mut stmt = conn
         .prepare(
-            "SELECT DISTINCT v.hash, v.file_name, v.file_path, v.extension, v.size_bytes, v.modified_at, v.play_position, v.duration
+            "SELECT DISTINCT v.hash, v.file_name, v.file_path, v.extension, v.size_bytes, v.modified_at, v.play_position, v.duration,
+                    (SELECT CAST(vt.value_text AS INTEGER) FROM video_tags vt
+                     JOIN tag_types tt ON tt.id = vt.type_id
+                     WHERE vt.video_hash = v.hash AND tt.name = '星级') AS stars,
+                    COALESCE((SELECT vt.value_text FROM video_tags vt
+                     JOIN tag_types tt ON tt.id = vt.type_id
+                     WHERE vt.video_hash = v.hash AND tt.name = '画质'), '') AS quality
              FROM videos v
              LEFT JOIN video_tags vt ON vt.video_hash = v.hash
              WHERE v.file_name LIKE ?1 OR vt.value_text LIKE ?1
@@ -321,6 +341,53 @@ pub fn search_videos(app: AppHandle, keyword: String) -> Result<Vec<VideoInfo>, 
                 modified_at: r.get(5)?,
                 play_position: r.get(6)?,
                 duration: r.get(7).unwrap_or(0.0),
+                stars: r.get::<_, Option<i64>>(8).ok().flatten().unwrap_or(0),
+                quality: r.get::<_, Option<String>>(9).ok().flatten().unwrap_or_default(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 按星级筛选视频（纯星级，无关键词）。返回该星级的所有视频，按修改时间倒序。
+#[tauri::command]
+pub fn list_videos_by_stars(app: AppHandle, stars: i64) -> Result<Vec<VideoInfo>, String> {
+    let conn = db::open(&app).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT v.hash, v.file_name, v.file_path, v.extension, v.size_bytes, v.modified_at, v.play_position, v.duration,
+                    (SELECT CAST(vt.value_text AS INTEGER) FROM video_tags vt
+                     JOIN tag_types tt ON tt.id = vt.type_id
+                     WHERE vt.video_hash = v.hash AND tt.name = '星级') AS stars,
+                    COALESCE((SELECT vt.value_text FROM video_tags vt
+                     JOIN tag_types tt ON tt.id = vt.type_id
+                     WHERE vt.video_hash = v.hash AND tt.name = '画质'), '') AS quality
+             FROM videos v
+             WHERE v.hash IN (
+                 SELECT vt.video_hash FROM video_tags vt
+                 JOIN tag_types tt ON tt.id = vt.type_id
+                 WHERE tt.name = '星级' AND CAST(vt.value_text AS INTEGER) = ?1
+             )
+             ORDER BY v.modified_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![stars], |r| {
+            Ok(VideoInfo {
+                hash: r.get(0)?,
+                file_name: r.get(1)?,
+                file_path: r.get(2)?,
+                extension: r.get(3)?,
+                size_bytes: r.get(4)?,
+                modified_at: r.get(5)?,
+                play_position: r.get(6)?,
+                duration: r.get(7).unwrap_or(0.0),
+                stars: r.get::<_, Option<i64>>(8).ok().flatten().unwrap_or(0),
+                quality: r.get::<_, Option<String>>(9).ok().flatten().unwrap_or_default(),
             })
         })
         .map_err(|e| e.to_string())?;

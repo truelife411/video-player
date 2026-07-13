@@ -60,7 +60,7 @@ const title = computed(() => (props.hash ? "视频标签" : "无视频"));
 </script>
 
 <template>
-  <div class="card" @click.stop @dblclick.stop @wheel.stop>
+  <div class="card" @click.stop @dblclick.stop @wheel.stop @contextmenu.prevent.stop="emit('close')">
     <div class="head">
       <span class="title">{{ title }}</span>
       <button class="close-btn" @click="emit('close')">✕</button>

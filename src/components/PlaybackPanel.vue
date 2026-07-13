@@ -132,30 +132,45 @@ function trackLabel(t: Track, idx: number): string {
         </div>
       </section>
 
-      <!-- 逐帧 + 截图（合并一行，更紧凑） -->
+      <!-- 逐帧 -->
       <section class="card">
-        <div class="card-label">逐帧 / 截图</div>
+        <div class="card-label">逐帧</div>
         <div class="btn-row">
-          <button class="pill" @click="emit('frameBack')">◀ 帧</button>
-          <button class="pill" @click="emit('frameForward')">帧 ▶</button>
-          <button class="pill" @click="emit('screenshot', true)">字幕截图</button>
-          <button class="pill" @click="emit('screenshot', false)">画面截图</button>
+          <button class="pill" @click="emit('frameBack')">◀ 上一帧</button>
+          <button class="pill" @click="emit('frameForward')">下一帧 ▶</button>
+        </div>
+      </section>
+
+      <!-- 截图 -->
+      <section class="card">
+        <div class="card-label">截图</div>
+        <div class="btn-row">
+          <button class="pill" @click="emit('screenshot', true)">含字幕</button>
+          <button class="pill" @click="emit('screenshot', false)">仅画面</button>
         </div>
       </section>
 
       <!-- 画面变换 -->
       <section class="card">
         <div class="card-label-row">
-          <span class="card-label">画面变换</span>
+          <span class="card-label">画面变换<span class="card-sub" v-if="videoRotate % 360 !== 0 || hFlipped || vFlipped"> · {{ videoRotate % 360 }}°<span v-if="hFlipped"> · 水平翻转</span><span v-if="vFlipped"> · 垂直翻转</span></span></span>
           <button class="link-btn" @click="emit('resetTransform')" title="还原全部">还原</button>
         </div>
         <div class="btn-row">
-          <button class="pill" :class="{ on: videoRotate % 360 !== 0 }" @click="emit('rotateCw')">
-            旋转<span class="val">{{ videoRotate }}°</span>
+          <button class="pill" :class="{ on: videoRotate % 360 !== 0 }" @click="emit('rotateCcw')" title="逆时针旋转 90°">
+            <span class="pill-icon">↺</span>
+            <span>逆时针</span>
           </button>
-          <button class="pill" @click="emit('rotateCcw')">↺ 90°</button>
-          <button class="pill" :class="{ on: hFlipped }" @click="emit('toggleHFlip')">水平翻转</button>
-          <button class="pill" :class="{ on: vFlipped }" @click="emit('toggleVFlip')">垂直翻转</button>
+          <button class="pill" :class="{ on: videoRotate % 360 !== 0 }" @click="emit('rotateCw')" title="顺时针旋转 90°">
+            <span class="pill-icon">↻</span>
+            <span>顺时针</span>
+          </button>
+          <button class="pill" :class="{ on: hFlipped }" @click="emit('toggleHFlip')" title="水平翻转">
+            <span>水平翻转</span>
+          </button>
+          <button class="pill" :class="{ on: vFlipped }" @click="emit('toggleVFlip')" title="垂直翻转">
+            <span>垂直翻转</span>
+          </button>
         </div>
       </section>
     </div>
@@ -244,6 +259,13 @@ function trackLabel(t: Track, idx: number): string {
   letter-spacing: 0.06em;
   color: rgba(255, 255, 255, 0.42);
   margin-bottom: 9px;
+}
+/* 画面变换标题后的状态摘要（角度/翻转） */
+.card-sub {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--color-accent);
 }
 .card-label-row {
   display: flex;
@@ -388,6 +410,12 @@ function trackLabel(t: Track, idx: number): string {
 .pill:hover {
   background: rgba(255, 255, 255, 0.14);
   color: #fff;
+}
+/* 旋转按钮的箭头图标 */
+.pill-icon {
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 700;
 }
 .pill .val {
   font-size: 10px;
