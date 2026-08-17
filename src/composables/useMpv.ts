@@ -82,7 +82,7 @@ export function useMpv() {
   //
   // 策略：按用户缩放优先显示；若视频区域超过屏幕可用空间，则等比缩小到
   // 能容纳的最大普通窗口。只有显式选择“最大化”策略才进入系统最大化状态。
-  async function resizeWindowForVideo(w: number, h: number) {
+  async function resizeWindowForVideo(w: number, h: number, policyOverride?: WindowSizePolicy) {
     if (w <= 0 || h <= 0) return;
     try {
       const appWindow = getCurrentWindow();
@@ -125,7 +125,7 @@ export function useMpv() {
         uiHeight: uiExtraHPhys,
         workWidth: maxInnerWidth,
         workHeight: maxInnerHeight,
-        policy: windowSizePolicy.value,
+        policy: policyOverride ?? windowSizePolicy.value,
       });
       if (result.action === "keep") return;
       if (result.action === "maximize") {
@@ -146,6 +146,25 @@ export function useMpv() {
     } catch (e) {
       console.warn("[自动调整窗口] 失败:", e);
     }
+  }
+
+  // 旋转/还原变换后重新适配窗口：像"新打开一个视频"一样，按旋转后的实际
+  // 显示比例重新计算窗口尺寸。忽略当前策略里的"最大化/保持当前"以及之前
+  // 手动改过的窗口大小（"适合屏幕"偏好保留），且不修改已保存的设置。
+  // 用队列串行执行，避免连续旋转时 setSize 竞态导致最终尺寸错误。
+  let resizeQueue: Promise<void> = Promise.resolve();
+  function queueRefitForTransform(): Promise<void> {
+    const task = resizeQueue.then(async () => {
+      const w = videoWidth.value;
+      const h = videoHeight.value;
+      if (w <= 0 || h <= 0) return;
+      // 90°/270° 旋转会互换显示宽高，按旋转后的实际比例计算
+      const rotated = videoRotate.value % 180 !== 0;
+      const policy: WindowSizePolicy = windowSizePolicy.value === "fit" ? "fit" : "video";
+      await resizeWindowForVideo(rotated ? h : w, rotated ? w : h, policy);
+    });
+    resizeQueue = task.catch(() => {});
+    return task;
   }
 
   // 轮询读取视频分辨率并调整窗口（轮询比 watch 更可靠：不受 hash 计算与
@@ -782,6 +801,8 @@ export function useMpv() {
       // 回退到 setProperty
       await setProperty("video-rotate", videoRotate.value);
     }
+    // 旋转改变了显示比例（90°/270° 宽高互换），像新打开视频一样重算窗口尺寸
+    void queueRefitForTransform();
   }
   // 逆时针旋转 90°
   async function rotateMinus90() {
@@ -792,6 +813,8 @@ export function useMpv() {
       console.error("[rotateMinus90] 失败:", e);
       await setProperty("video-rotate", videoRotate.value);
     }
+    // 同上：旋转后重新适配窗口尺寸
+    void queueRefitForTransform();
   }
   // 还原画面变换（旋转/翻转全部复位）
   async function resetTransform() {
@@ -806,6 +829,8 @@ export function useMpv() {
     if (hFlipped.value || vFlipped.value) {
       await setFlipState(false, false);
     }
+    // 旋转复位后显示比例恢复原样，同样重新适配窗口尺寸
+    void queueRefitForTransform();
   }
 
   // 定时保存进度（每 5 秒）
