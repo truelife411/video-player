@@ -346,6 +346,21 @@ function closeAllOverlays() {
   showSearch.value = false;
 }
 
+// —— 点击按钮后自动移除焦点 ——
+// 按钮点击后会残留键盘焦点，后续 keydown 的 target 就是该按钮，
+// 快捷键会被 shortcuts 的 interactive 上下文拦截（快进/快退/空格等全部失效），
+// 必须再点一下画面才能恢复。这里在点击按钮后自动 blur；
+// 范围滑块（音量/设置面板）拖完后同样移除焦点，避免方向键被滑块"吃掉"。
+// 文本输入框不处理——它们需要保持焦点用于输入（搜索框、标签编辑等）。
+function onDocClick() {
+  const ae = document.activeElement;
+  if (ae instanceof HTMLElement && ae.tagName === "BUTTON") ae.blur();
+}
+function onDocMouseUp() {
+  const ae = document.activeElement;
+  if (ae instanceof HTMLInputElement && ae.type === "range") ae.blur();
+}
+
 const displayName = computed(() => {
   if (mpv.currentFileName.value) return mpv.currentFileName.value;
   if (mpv.currentFile.value) return mpv.currentFile.value.split(/[\\/]/).pop() || "";
@@ -369,6 +384,8 @@ watch(
 onMounted(async () => {
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("mousemove", onMouseMove);
+  window.addEventListener("click", onDocClick);
+  window.addEventListener("mouseup", onDocMouseUp);
   showControls();
 
   // 启动时确保预设标签存在（修复误删）
@@ -413,6 +430,8 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("mousemove", onMouseMove);
+  window.removeEventListener("click", onDocClick);
+  window.removeEventListener("mouseup", onDocMouseUp);
   if (hideTimer) clearTimeout(hideTimer);
   if (clickTimer) clearTimeout(clickTimer);
   unlistenFullscreen?.();
