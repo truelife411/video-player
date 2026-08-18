@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import ProgressBar from "./ProgressBar.vue";
 
 const props = defineProps<{
@@ -35,21 +35,29 @@ const emit = defineEmits<{
 }>();
 
 // —— 音量滑块显隐 ——
-// hover 音量区域时显示；或外部 forceShowVolume（键盘调音量）时短暂显示
-const hovering = ref(false);
-const showVolumeSlider = computed(() => hovering.value || flashVolume.value);
-
+// 单击音量图标弹出/收起（避免鼠标悬停误触）；点击其他任意位置收起；
+// 键盘调音量（forceShowVolume）或滚轮调音量时短暂闪现作反馈。
+const volumeOpen = ref(false);
+const volumeWrapRef = ref<HTMLElement | null>(null);
+// 拖拽 range 时持续显示
+const draggingVolume = ref(false);
 // 键盘触发时短暂闪现
 const flashVolume = ref(false);
 let flashTimer: number | null = null;
+function flashVolumeSlider() {
+  flashVolume.value = true;
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(() => (flashVolume.value = false), 1200);
+}
 watch(
   () => props.forceShowVolume,
   (v) => {
-    if (!v) return;
-    flashVolume.value = true;
-    if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = window.setTimeout(() => (flashVolume.value = false), 1200);
+    if (v) flashVolumeSlider();
   }
+);
+
+const showVolumeSlider = computed(
+  () => volumeOpen.value || flashVolume.value || draggingVolume.value
 );
 
 const volumePercent = computed(() => (props.isMuted ? 0 : props.volume));
@@ -58,10 +66,16 @@ function onVolumeWheel(e: WheelEvent) {
   e.preventDefault();
   const delta = e.deltaY < 0 ? 5 : -5;
   emit("setVolume", Math.min(100, Math.max(0, props.volume + delta)));
+  flashVolumeSlider();
 }
 
-// 拖拽 range 时持续显示
-const draggingVolume = ref(false);
+// 点击音量区域外的任意位置时收起滑块
+function onDocMouseDown(e: MouseEvent) {
+  const wrap = volumeWrapRef.value;
+  if (wrap && !wrap.contains(e.target as Node)) volumeOpen.value = false;
+}
+onMounted(() => document.addEventListener("mousedown", onDocMouseDown));
+onUnmounted(() => document.removeEventListener("mousedown", onDocMouseDown));
 
 const volumeIcon = computed(() => {
   if (props.isMuted || props.volume === 0) return "🔇";
@@ -172,17 +186,27 @@ const volumeIcon = computed(() => {
           <svg viewBox="0 0 24 24" class="g"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="12" cy="5" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.3" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg>
         </button>
 
-        <!-- 音量：整个区域 hover 都保持显示，含滑块本体 -->
+        <!-- 音量：单击图标弹出/收起滑块，静音在滑块内或按 M -->
         <div
+          ref="volumeWrapRef"
           class="volume-wrap"
-          @mouseenter="hovering = true"
-          @mouseleave="hovering = false"
           @wheel="onVolumeWheel"
         >
-          <button class="icon-btn" title="静音 (M)" @click="emit('toggleMute')">
+          <button
+            class="icon-btn"
+            title="音量调节（单击弹出，M 静音）"
+            @click="volumeOpen = !volumeOpen"
+          >
             {{ volumeIcon }}
           </button>
           <div class="volume-slider" :class="{ show: showVolumeSlider }">
+            <button
+              class="vol-mute-btn"
+              :title="isMuted ? '取消静音 (M)' : '静音 (M)'"
+              @click="emit('toggleMute')"
+            >
+              {{ isMuted ? "🔇" : "🔊" }}
+            </button>
             <input
               type="range"
               min="0"
@@ -494,14 +518,11 @@ const volumeIcon = computed(() => {
   opacity: 0;
 }
 
-/* 音量区域：按钮 + 滑块容器，hover 整体保持显示 */
+/* 音量区域：按钮 + 滑块容器 */
 .volume-wrap {
   position: relative;
   display: flex;
   align-items: center;
-  /* 向上延伸可 hover 区域，覆盖滑块 */
-  padding-top: 12px;
-  margin-top: -12px;
 }
 
 .volume-slider {
@@ -542,5 +563,23 @@ const volumeIcon = computed(() => {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.7);
   font-variant-numeric: tabular-nums;
+}
+
+/* 滑块内的静音切换小按钮 */
+.vol-mute-btn {
+  width: 28px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.85);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+.vol-mute-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 </style>
