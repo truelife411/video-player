@@ -352,6 +352,8 @@ function closeAllOverlays() {
 // 必须再点一下画面才能恢复。这里在点击按钮后自动 blur；
 // 范围滑块（音量/设置面板）拖完后同样移除焦点，避免方向键被滑块"吃掉"。
 // 文本输入框不处理——它们需要保持焦点用于输入（搜索框、标签编辑等）。
+// 注意：必须用捕获阶段监听——控制栏/各面板根元素都有 @click.stop，
+// 冒泡阶段的事件到不了 window，捕获阶段在事件到达目标前就先执行，拦不住。
 function onDocClick() {
   const ae = document.activeElement;
   if (ae instanceof HTMLElement && ae.tagName === "BUTTON") ae.blur();
@@ -384,7 +386,8 @@ watch(
 onMounted(async () => {
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("mousemove", onMouseMove);
-  window.addEventListener("click", onDocClick);
+  // 捕获阶段：面板根元素的 @click.stop 拦不住它，确保按钮点击后一定 blur
+  window.addEventListener("click", onDocClick, true);
   window.addEventListener("mouseup", onDocMouseUp);
   showControls();
 
@@ -430,7 +433,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("mousemove", onMouseMove);
-  window.removeEventListener("click", onDocClick);
+  window.removeEventListener("click", onDocClick, true);
   window.removeEventListener("mouseup", onDocMouseUp);
   if (hideTimer) clearTimeout(hideTimer);
   if (clickTimer) clearTimeout(clickTimer);
