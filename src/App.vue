@@ -196,22 +196,28 @@ async function toggleFullscreen() {
   }
 }
 
-// —— 控制栏自动隐藏 ——
+// —— 控制栏显隐 ——
+// 窗口模式常驻显示，仅全屏播放时自动隐藏。
 const controlsVisible = ref(true);
 let hideTimer: number | null = null;
 
+// 窗口模式工具栏常驻；全屏播放时才自动隐藏（动一下鼠标或按键即恢复）。
 function showControls() {
   controlsVisible.value = true;
   if (hideTimer) clearTimeout(hideTimer);
+  if (!isFullscreen.value) return; // 窗口模式：始终显示
   if (!mpv.isPlaying.value || anyOverlayOpen.value || mpv.isOpening.value || mpv.pausedForCache.value || mpv.playbackState.value === "failed" || mpv.playbackState.value === "ended") return;
   hideTimer = window.setTimeout(() => {
-    if (mpv.isPlaying.value && !anyOverlayOpen.value && !mpv.pausedForCache.value) controlsVisible.value = false;
+    if (isFullscreen.value && mpv.isPlaying.value && !anyOverlayOpen.value && !mpv.pausedForCache.value) controlsVisible.value = false;
   }, 3000);
 }
 
 function onMouseMove() {
   showControls();
 }
+
+// 全屏状态变化（按钮 F / 系统快捷键）时刷新工具栏显隐
+watch(isFullscreen, () => showControls());
 
 // —— 单击/双击/拖拽画面处理 ——
 // 单击（按下后原地释放、无拖动）= 播放/暂停；双击 = 全屏；
